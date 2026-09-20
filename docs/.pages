@@ -1,0 +1,6 @@
+nav:
+  - index.md
+  - Findings: findings
+  - Metrics: metrics
+  - Gate: gates
+  - enable-pages.md
