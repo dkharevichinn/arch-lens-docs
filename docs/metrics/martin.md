@@ -2,27 +2,48 @@
 
 <!-- report-table: Martin -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `martin` (object module → `{ instable, abstractness, distance, afferent, efferent }`) |
-| Report table | **Martin** |
-| Related finding | [B8](../findings/B8.md) |
+| Ключ в `metrics.json` | `martin` — объект модуль → `{ instable, abstractness, distance, afferent, efferent }` для каждого учитываемого модуля, у которого есть хотя бы один тип |
+| Таблица на вкладке Metrics | **Martin** с колонками `instable`, `abstractness`, `distance`, `afferent`, `efferent`; при пустом словаре таблица не выводится |
+| Где считается | `MartinMetricsAnalyzer.Analyze`, вызывается из `StaticMetricsCalculator.Calculate`; счётчики берутся из [fanInOut](fanInOut.md) |
+| Пороги | константы правила [B8](../findings/B8.md): `PainInstableMax = 0.3`, `PainAbstractnessMax = 0.3` и `Ca >= 2` для зоны боли; `ContractAbstractnessMin = 0.5` для модуля с контрактной сборкой |
 
-## What it measures
+## Термины
 
-Robert Martin I/A/D on the **module** graph:
+**Главная последовательность** (main sequence) — прямая `A + I = 1` на плоскости, где по одной оси отложена нестабильность `I`, а по другой — абстрактность `A`. Роберт Мартин исходит из того, что у здорового модуля эти величины уравновешены: от стабильного модуля (`I ≈ 0`, от него зависят многие) ждут абстракций (`A ≈ 1`), а нестабильному листу (`I ≈ 1`, он зависит от многих, от него — никто) позволено быть целиком конкретным. `D = |A + I − 1|` — нормированное расстояние до этой прямой: `0` на ней, `1` в двух дальних углах.
 
-- `afferent` = fan-in (`Ca`), `efferent` = fan-out (`Ce`)
-- `instable` `I = Ce/(Ca+Ce)` (0 if unused)
-- `abstractness` `A = Na/Nc` where `Na` is interfaces + abstract classes (not abstract records)
-- `distance` `D = |A + I − 1|`
+**Зона боли** (zone of pain) — угол `I ≈ 0`, `A ≈ 0`: модуль конкретный, и от него зависят многие. Его тяжело менять, потому что любая правка бьёт по всем зависящим, и нельзя подменить, потому что абстракций нет. Противоположный угол `I ≈ 1`, `A ≈ 1` — **зона бесполезности**: абстракции, от которых никто не зависит. Arch Lens выдаёт находки только для зоны боли и для недостаточно абстрактных контрактов.
 
-## How to read it
+## Что измеряет
 
-Main sequence: `A + I ≈ 1` (distance near 0). Stable (`I` low) modules should be abstract (`A` high). Unstable (`I` high) modules may be concrete.
+```text
+Ca = afferent = fanIn[m]      число модулей, зависящих от m
+Ce = efferent = fanOut[m]     число модулей, от которых зависит m
+Nc = число учитываемых типов модуля m (все сборки модуля, кроме host и test)
+Na = число типов с Kind == "interface" или (Kind == "class" и IsAbstract)
+instable      I = Ca + Ce == 0 ? 0 : Ce / (Ca + Ce)
+abstractness  A = Nc == 0 ? 0 : Na / Nc
+distance      D = |A + I − 1|
+```
 
-[B8](../findings/B8.md) **pain**: no contract, `I≤0.3`, `A≤0.3`, `Ca≥2`. **concrete**: has contract and `A<0.5`.
+Абстрактными считаются только интерфейсы и абстрактные классы. Записи имеют `Kind == "record"`, поэтому `abstract record` в `Na` не входит (тест `Abstract_record_does_not_count_toward_Na`); перечисления, структуры, делегаты и статические классы — конкретные типы. `Nc` включает все типы модуля, в том числе DTO контракта и классы реализации, поэтому каждый конкретный класс разбавляет абстрактность.
 
-## What "bad" looks like
+Правило B8 читает эти числа так. Для модуля с сборкой роли `contract` при `A < 0.5` выдаётся `B8` с тегом `concrete` и сообщением `contract not abstract: {module}`; зона боли для такого модуля не проверяется. Для модуля без контрактной сборки при `I <= 0.3`, `A <= 0.3` и `Ca >= 2` выдаётся `B8` с тегом `pain` и сообщением `zone of pain: {module}`. Порог `0.5` применяется к модулю целиком, а не к контрактной сборке: у модуля с тремя интерфейсами в `X.Contracts` и тридцатью классами в `X` получается `A = 3 / 33 ≈ 0.09`.
 
-Concrete hubs (low I, low A, inbound ≥ 2). Contract modules whose types are almost all concrete DTOs (`A` ≪ 0.5). Distance ~1 (maximally off the main sequence).
+Примеры из юнит-тестов `MartinMetricsAnalyzerTests`: модуль `S` из одного класса, от которого зависят `A` и `B`, получает `Ca = 2`, `Ce = 0`, `I = 0`, `A = 0`, `D = 1` и находку `zone of pain: S` (`Stable_concrete_impl_with_dependents_is_zone_of_pain`); изолированный модуль получает те же `I = 0`, `A = 0`, `D = 1`, но `Ca = 0`, и находки нет (`Isolated_impl_module_has_I_zero_and_no_pain`); модуль из двух интерфейсов получает `A = 1`, `I = 0`, `D = 0` — точно на главной последовательности (`Contract_of_only_interfaces_is_not_B8_concrete`).
+
+## Как читать
+
+- Колонки `instable`, `abstractness`, `distance` — числа от `0` до `1`: целые значения выводятся без дробной части (`0`, `1`), остальные — с двумя знаками (`0.33`). Колонки `afferent` и `efferent` — целые числа, равные Fan-in и Fan-out таблицы Modules. Ключ в JSON — именно `instable`, а не `instability`.
+- `I` близко к `0` означает, что от модуля зависят, а он сам почти ни от кого не зависит («нижний» модуль); `I` близко к `1` — наоборот («верхний»). Изолированный модуль получает `I = 0` и `D = 1` по договорённости, а не потому, что стабилен: им занимается [P3](../findings/P3.md), а не B8.
+- Здоровая картина: модули из интерфейсов (общие контракты, абстракции в `shared`) стоят у `A ≈ 1` с небольшим `I`; прикладные модули с реализацией имеют `I` выше и `A` ниже, но не сидят в углу `I = 0; A = 0`.
+- Метрики считаются по статическим рёбрам; рёбра `binding` из регистраций DI не учитываются.
+
+## Что считать плохим
+
+- **Зона боли** (`I <= 0.3`, `A <= 0.3`, `Ca >= 2` у модуля без контракта) — конкретный узел, от которого зависят минимум два модуля. Лечится выделением контрактной сборки с интерфейсами и переключением зависимых на неё.
+- **Контракт с `A < 0.5`** — либо контрактная сборка из DTO, записей и перечислений почти без интерфейсов, либо модуль с маленьким контрактом и большой реализацией. Первое — повод спросить, что в контракте делают конкретные классы; второе — свойство формулы, которое стоит понимать, прежде чем принимать находку через `knownFindings`.
+- **`D` около `1` у модуля с большим fan-in** — самый дорогой для изменений модуль решения; читайте вместе с [fanInOut](fanInOut.md) и [B7](../findings/B7.md). Угол `A ≈ 1`, `I ≈ 1` правилом не покрыт, но на те же типы обычно указывают [E3](../findings/E3.md) и [P3](../findings/P3.md).
+
+См. также [B8](../findings/B8.md), [fanInOut](fanInOut.md), [B7](../findings/B7.md), [P3](../findings/P3.md), [contractSurface](contractSurface.md), [publicInImplementation](publicInImplementation.md).

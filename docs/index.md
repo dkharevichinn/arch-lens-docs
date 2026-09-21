@@ -1,55 +1,86 @@
-# Arch Lens catalog
+# Каталог правил и метрик Arch Lens
 
-This site is the **human-readable catalog** of every finding code, metric, and gate verdict the Arch Lens tool emits. It is the page a later report change will deep-link to from `dsm.html` (finding codes and metric names). Those HTML links are **not** in this drop.
+Этот сайт — учебное описание всего, что инструмент Arch Lens умеет сообщить о .NET-решении: каждого кода правила (`A1` … `R2`), каждой метрики из `metrics.json` и каждого вердикта команды `gate`. Страницы написаны по исходному коду анализаторов, а не по замыслу: если на странице стоит порог, формула или текст сообщения, они взяты из `src/ArchLens.Analysis` и проверяются автотестом `CatalogConsistencyTests` при каждой сборке продукта.
 
-**This site does not replace** the design notes under [`docs/superpowers/`](https://github.com/dkharevichinn/arch-lens/tree/main/docs/superpowers) in the repository. Those specs stay in git; this site is the operator-facing catalog with examples and general-case fixes.
+Отчёт `dsm.html`, который создаёт команда `arch-lens map`, ссылается на этот сайт: код правила в колонке Rule вкладки Findings открывает страницу `/findings/{код}/`, название чипа или заголовок таблицы на вкладке Metrics открывает `/metrics/{ключ}/`. Адрес каталога задаётся ключом `docsBaseUrl` в `arch-lens.yaml`; по умолчанию это [https://dkharevichinn.github.io/arch-lens-docs/](https://dkharevichinn.github.io/arch-lens-docs/).
 
-## Stable URLs
+Проектные заметки и спецификации, по которым инструмент строился, остаются в репозитории в каталоге [`docs/superpowers/`](https://github.com/dkharevichinn/arch-lens/tree/main/docs/superpowers). Этот сайт их не заменяет: там история решений, здесь — справочник для того, кто читает отчёт и должен решить, что делать.
 
-| Kind | Pattern | Example |
+## Как читать этот каталог
+
+Начинать стоит со [словаря терминов](glossary.md). Правила семейства B невозможно понять, не зная, что такое [учитываемый модуль](glossary.md#scored), [граф модулей](glossary.md#module-graph) и [компонента сильной связности](glossary.md#scc); правила семейства A опираются на [роли сборок](glossary.md#module); всё, что связано с гейтом, опирается на понятия [класса находки](glossary.md#class), [порога `ratchet`](glossary.md#ratchet) и [отпечатка](glossary.md#fingerprint).
+
+Каждая страница правила построена одинаково:
+
+| Раздел | Что в нём |
+|---|---|
+| таблица в начале | код, класс, кто выдаёт находку, какие команды её порождают, отпечаток, дословный текст сообщения |
+| Термины | понятия, нужные именно для этого правила, со ссылками в словарь |
+| Когда срабатывает | условие в том виде, в каком оно записано в коде: формула, пороги, что учитывается и что исключено |
+| Пример | численный пример, как правило из юнит-теста продукта, и короткий фрагмент кода на C# |
+| Где смотреть в отчёте | на какой вкладке, в каком чипе, таблице или JSON-файле видно это правило и его исходные данные |
+| Как исправить | шаги по устранению и абзац «Когда допустимо принять» — как оформить осознанное принятие долга |
+| Чего не делать | приёмы, которые убирают находку из отчёта, не убирая проблему |
+
+Страницы метрик построены как «Что измеряет» (формула как в коде), «Как читать» (единицы, формат чипа, где искать значение) и «Что считать плохим».
+
+## Три класса находок и вердикт гейта
+
+Каждая [находка](glossary.md#finding) несёт класс, и именно класс определяет, что сделает команда `arch-lens gate`:
+
+| Класс | Вердикт | Код выхода | Что означает |
+|---|---|---|---|
+| `invariant` | [block](gates/block.md) | 5 | нарушено правило, у которого нет допустимого уровня: запретное ребро между ролями, новый цикл модулей, `InternalsVisibleTo` в нетестовую сборку |
+| `ratchet` | [block](gates/block.md) | 5 | число стало строго больше порога, зафиксированного в `baseline.json` |
+| `trigger` | [triggers](gates/triggers.md) | 4 | запах, выброс или предмет для ревью; вердикт `triggers` выносится, только если нет ни одной находки классов `invariant` и `ratchet` |
+
+Если после применения `knownFindings`, `knownCycles` и сравнения с порогами находок не осталось, вердикт — [pass](gates/pass.md), код выхода 0.
+
+Слово `ratchet` здесь означает порог в `baseline.json`, который запрещено ухудшать. Гейт никогда не переписывает этот файл сам: улучшение метрики не «закрепляется» автоматически, а ухудшение блокирует до тех пор, пока метрика не вернётся к порогу или пока порог не будет осознанно поднят командой `arch-lens baseline`. Подробно — в словаре, раздел [ratchet](glossary.md#ratchet).
+
+## Какие команды что порождают
+
+Это самый частый источник недоумения при чтении отчёта, поэтому стоит запомнить: **вкладка Findings показывает только находки снимка**, то есть то, что вычисляет команда `map`. Правила, которые сравнивают снимок с `baseline.json` или с предыдущим снимком, существуют только в `gate-report.json`.
+
+| Где появляется | Коды |
+|---|---|
+| `map` → `findings.json` → вкладка Findings (и `gate`, если отпечаток не занесён в `knownFindings`) | A1, A2, A5, A6, A7, B5, B6, B7, B8, C1, C2, C3, D1, D2, D3, E1, E2, E3, E4, F1 (как `trigger`), F2, P1, P3, R1, R2; G4 при включённом `gate.coChange` |
+| только `gate --baseline` | A3, A4, B1, B2, B3, B4, B9, F1 (как `ratchet` или как `trigger` «порог ещё не зафиксирован») |
+| только `gate --baseline --against old-graph.json` | A8, C4, G1, G2, G3 |
+| `diff --from … --to …` | ничего: команда строит визуальное сравнение контрактов и не выносит вердикт |
+
+Значения, по которым гейт вычисляет «только гейтовые» правила, при этом видны на вкладке Metrics: раздел Cycles для B1, чипы `tangle`, `feedback`, `propagation`, `shared gravity`, `testsPastContract` для B2, B3, B4, B9, F1, колонка Public impl таблицы Modules для A3, таблица Contracts для A4.
+
+## Семейства правил
+
+| Префикс | Семейство | Что проверяет | Классы |
+|---|---|---|---|
+| A | Контракты и границы сборок | кто от кого зависит с учётом ролей `contract`, `implementation`, `shared`; рост публичной поверхности; `InternalsVisibleTo`; удаление публичного API | `invariant`, `ratchet`, `trigger` |
+| B | Форма графа модулей | циклы и их вес, обратные рёбра, распространение изменений, размер ядра, длина цепочек, fan-in и fan-out, метрики Мартина, тяготение к `shared` | `invariant`, `ratchet`, `trigger` |
+| C | Размер и рост | модуль-выброс по числу типов, соотношение контракта и тела, UI против реализации, доминирующий рост | `trigger` |
+| D | Связность | внутренняя связность модуля, острова типов, типы, тянущиеся к чужому модулю | `trigger` |
+| E | Запахи типов | тип-«бог», мёртвый тип, церемониальный интерфейс, дублирующиеся понятия | `trigger` |
+| F | Тесты | тесты, обходящие контракт; модули без тестов | `ratchet`, `trigger` |
+| P | Паттерны матрицы | feature envy, изолированный модуль | `trigger` |
+| G | Сравнение снимков и история git | новые межмодульные рёбра, публичный тип с единственным потребителем, радиус изменений, совместные изменения без статической связи | `invariant`, `trigger` |
+| R | Время выполнения (DI) | циклы через регистрации контейнера, порты без регистрации | `trigger` |
+
+Кода `P2` в продукте нет: цикл из двух модулей — это [B1](findings/B1.md). Полный список — на странице [Findings](findings/index.md), список метрик — на странице [Metrics](metrics/index.md).
+
+## Что исключено из подсчётов
+
+Сборки с ролями `host` (корень композиции) и `test` не входят в [граф модулей](glossary.md#module-graph) и не учитываются ни в одной метрике семейства B, C, D, E, P и R. Причина проста: корень композиции ссылается на реализации всех модулей по определению, а тесты — на всё подряд; будь они учтены, любая система выглядела бы как один цикл. Есть ровно три исключения: правила [F1](findings/F1.md) и [F2](findings/F2.md) используют тестовые сборки как источник рёбер, а правило [E3](findings/E3.md) учитывает типы `host` как потребителей интерфейса. На вкладке Matrix роли `host` и `test` по этой же причине выключены по умолчанию.
+
+## Матрица и граф модулей — не одно и то же
+
+Вкладка Matrix показывает зависимости между **компонентами**, которые задаются правилами `rules` в `arch-lens.yaml` (по умолчанию — пространствами имён). Правила семейства B и метрики считаются по **графу модулей**, где узлы — модули из сборок и ролей. Это два разных разбиения одних и тех же типов, и они могут не совпадать; в частности, чип `cycles` в шапке отчёта считает циклы между компонентами матрицы, а раздел Cycles на вкладке Metrics — между модулями. Подробнее — в словаре, раздел [отличие DSM от графа модулей](glossary.md#dsm-vs-modules).
+
+## Как устроены адреса
+
+| Что | Шаблон | Пример |
 |---|---|---|
-| Finding | `/findings/{code}/` | [`/findings/A1/`](findings/A1.md) |
-| Metric | `/metrics/{metrics.json key}/` | [`/metrics/tanglePct/`](metrics/tanglePct.md) |
-| Gate verdict | `/gates/{pass\|triggers\|block}/` | [`/gates/block/`](gates/block.md) |
+| правило | `/findings/{код}/` | [`/findings/B2/`](findings/B2.md) |
+| метрика | `/metrics/{ключ metrics.json}/` | [`/metrics/tanglePct/`](metrics/tanglePct.md) |
+| вердикт | `/gates/{pass\|triggers\|block}/` | [`/gates/block/`](gates/block.md) |
 
-Canonical metric URLs use **`metrics.json` keys** (camelCase). Metrics-tab **chip labels** (`tangle`, `shared gravity`, …) are bound on those pages so a later report can map either the chip or the JSON key.
-
-## How findings relate to the gate
-
-Arch Lens findings carry a **class**:
-
-| Class (`findings.json` / `gate-report.json`) | Gate effect | Typical use |
-|---|---|---|
-| `invariant` | **block** (exit 5) | New illegal edges, new module cycles, InternalsVisibleTo to non-tests |
-| `ratchet` | **block** (exit 5) | A number got strictly worse than `baseline.json` |
-| `trigger` | **triggers** (exit 4) unless something else blocks | Smell, outlier, missing ratchet, review item |
-
-`arch-lens gate` prints `verdict=pass|triggers|block`. See [Gate](gates/index.md).
-
-Silencing a fingerprint in `baseline.json` `knownFindings` (or a cycle in `knownCycles`) is for **acknowledged debt**, not a substitute for a structural fix. Each finding page says when silence is legitimate and when it is hiding the problem.
-
-## Families
-
-| Prefix | Family | Typical class |
-|---|---|---|
-| A | Contracts and assembly boundaries | invariant / ratchet / trigger |
-| B | Graph shape (cycles, core, Martin, shared) | invariant / ratchet / trigger |
-| C | Size and growth | trigger |
-| D | Cohesion | trigger |
-| E | Type smells | trigger |
-| F | Tests | ratchet / trigger |
-| P | DSM patterns | trigger |
-| G | Diff and git coupling | invariant / trigger |
-| R | Runtime (DI) | trigger |
-
-There is **no P2** in the product. A two-module cycle is [B1](findings/B1.md). Do not invent codes that analyzers do not emit.
-
-## Commands that emit this catalog
-
-- `arch-lens map` — snapshot findings (`findings.json`, Findings tab) plus metrics
-- `arch-lens baseline` — writes ratchets, `knownFindings`, `knownCycles`
-- `arch-lens gate --baseline` — synthesizes ratchets (A3/A4, B2–B4, B9, F1) and B1; passes other snapshot findings through `knownFindings`
-- `arch-lens gate --against old-graph.json` — also G1–G3, C4, A8
-- `arch-lens diff` — contract visuals; **does not** emit gate findings
-
-Product metrics skip `host` and `test` assemblies except F1/F2 (test is the source).
+Адреса метрик используют ключи `metrics.json` в camelCase. Названия чипов вкладки Metrics (`tangle`, `shared gravity`, …) привязаны к этим же страницам, так что отчёт может ссылаться либо по чипу, либо по ключу.

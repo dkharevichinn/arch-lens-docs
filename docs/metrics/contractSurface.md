@@ -2,22 +2,47 @@
 
 <!-- report-table: Contracts -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `contractSurface` (object **assembly** → int) |
-| Report table | **Contracts** (Unit, Surface) |
-| Related findings | [A4](../findings/A4.md), [A8](../findings/A8.md), [G2](../findings/G2.md) |
+| Ключ в `metrics.json` | `contractSurface` — объект **имя сборки** → целое число; ключами служат имена контрактных сборок (`Account.Contracts`), а не идентификаторы модулей |
+| Таблица на вкладке Metrics | **Contracts** с колонками `Unit` (имя сборки) и `Surface` (целое число); таблица выводится всегда, при отсутствии контрактных сборок — пустая |
+| Где считается | `StaticMetricsCalculator.Calculate`, по типам сборок с ролью `contract` |
+| Порог | `baseline.ratchets.contractSurface[<сборка>]`; правило [A4](../findings/A4.md): при строгом росте — класс `ratchet` с сообщением `contractSurface[{сборка}] {текущее} > baseline {порог}`, при новом ключе — класс `trigger` с сообщением `new module/contract, review surface: {сборка}`; только `gate` |
 
-## What it measures
+## Термины
 
-Per **contract assembly** (not module id): public type count + sum of `PublicMembers` on those public types.
+**Публичный тип** — тип с эффективной доступностью `public` ([словарь](../glossary.md#public)); вложенный `public` внутри `internal` класса публичным не считается. **`PublicMembers`** — число явно объявленных публичных членов типа: методов, конструкторов, свойств (свойство считается одним членом, его `get` и `set` отдельно не считаются), событий и полей, включая константы перечисления; члены из сгенерированного кода не учитываются.
 
-Assemblies without a contract role do not appear. Empty object if the repo has no contract assemblies.
+**Поверхность контракта** — сколько публичных «имён» сборка предъявляет наружу: каждый публичный тип даёт единицу за себя плюс по единице за каждый публичный член.
 
-## How to read it
+## Что измеряет
 
-The Contracts table **Unit** column is the assembly name (`Account.Contracts`). **Surface** is the integer. Gate ratchet keys must match those names.
+```text
+для каждой сборки с ролью contract:
+  contractSurface[assembly] = Σ по публичным типам t сборки (1 + PublicMembers(t))
+сборка появляется в словаре, как только у неё есть хотя бы один тип, даже internal;
+  тогда её поверхность может быть равна 0
+сборки с другими ролями в словарь не попадают
+```
 
-## What "bad" looks like
+Пример из юнит-теста `A4_surface_is_public_types_plus_their_public_members`: в `Account.Contracts` публичный интерфейс `IAuth` с тремя членами и `internal`-тип `Hidden` с девяноста девятью членами дают `contractSurface["Account.Contracts"] = 1 + 3 = 4`; тип `Hidden` не добавляет ничего. Интерфейс из пяти методов весит `6`, публичное перечисление из четырёх значений — `5`, пустой маркерный интерфейс — `1`.
 
-Surface growing every PR ([A4](../findings/A4.md) blocks). A huge surface with [C2](../findings/C2.md) anemic (many contract types, little body). Shrinking surface is not A4; disappearing members with `--against` are [A8](../findings/A8.md).
+**Чем колонка `Unit` отличается от идентификатора модуля.** Везде в отчёте — в таблице Modules, в `fanInOut`, `publicInImplementation`, `martin` — строки называются идентификатором модуля: `Account`. Таблица Contracts и словарь `contractSurface` называют **сборку**: `Account.Contracts`. По конвенции модуль получается из имени сборки отбрасыванием суффикса `.Contracts`, но связь не обязана быть один к одному: если в `arch-lens.yaml` две сборки (`Account.Contracts` и `Account.Events`) получили роль `contract` и модуль `Account`, в таблице Contracts будет две строки, а в `baseline.ratchets.contractSurface` — два отдельных порога. Ключи порогов должны совпадать с именами сборок буква в букву; переименование сборки даёт новый ключ и находку A4 класса `trigger`.
+
+## Как читать
+
+- Значение — целое число без единиц измерения; в `metrics.json` оно лежит под ключом `contractSurface.<сборка>`, тот же ключ используется в `baseline.json`.
+- Метрика считает **объявления**, а не использование: интерфейс, который никто не реализует, и метод, который никто не вызывает, входят в поверхность наравне с остальными.
+- Перегрузки считаются отдельно, потому что у каждой свой идентификатор документации (`M:Account.Contracts.IAuth.Login(System.String)`), в который входят типы параметров. Изменение сигнатуры существующего метода меняет идентификатор, но не число членов, поэтому поверхность не меняется — такие правки видит только [A8](../findings/A8.md).
+- Публичные типы сборок реализации и инфраструктуры в поверхность не входят: их считает [publicInImplementation](publicInImplementation.md) по модулям.
+- **Таблица Contracts на вкладке Metrics и вкладка Contracts отчёта — разные вещи.** Вкладка показывает состав контрактов по типам и членам (и различия между двумя снимками для `arch-lens diff`), а чип `contracts` в шапке отчёта считает **модули**, у которых есть хотя бы одна контрактная сборка. Таблица на вкладке Metrics — только `Unit` и `Surface` по сборкам.
+- Уменьшение поверхности гейт не замечает: A4 сравнивает только в сторону роста. Удалённые члены при `gate --against old-graph.json` перечисляет [A8](../findings/A8.md), новые публичные типы с единственным потребителем — [G2](../findings/G2.md).
+
+## Что считать плохим
+
+- **Рост относительно `baseline.ratchets.contractSurface[<сборка>]`** — находка A4 класса `ratchet` и вердикт `block`. Равенство и уменьшение вердикт не меняют; вернуть `pass` можно, убрав лишнее из контракта или осознанно зафиксировав новый порог командой `arch-lens baseline`.
+- **Поверхность растёт в каждом изменении** — контракт превращается в свалку DTO и вспомогательных типов; каждое публичное имя — обещание совместимости, которое придётся держать.
+- **Большая поверхность при маленьком теле** — анемичный контракт ([C2](../findings/C2.md) по числу типов): модуль объявляет много, а делает мало.
+- **Поверхность из конкретных классов** — при абстрактности модуля ниже `0.5` сработает [B8](../findings/B8.md) с сообщением `contract not abstract`.
+
+См. также [A4](../findings/A4.md), [A8](../findings/A8.md), [G2](../findings/G2.md), [C2](../findings/C2.md), [B8](../findings/B8.md), [publicInImplementation](publicInImplementation.md), [martin](martin.md).

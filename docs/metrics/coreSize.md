@@ -2,20 +2,52 @@
 
 <!-- report-chip: coreSize -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `coreSize` (int) |
-| Metrics chip | **coreSize** |
-| Related finding | [B5](../findings/B5.md) |
+| Ключ в `metrics.json` | `coreSize` (целое число) |
+| Чип на вкладке Metrics | **coreSize** (целое число без единиц измерения) |
+| Где считается | `CorePathAnalyzer.Compute`, вызывается из `StaticMetricsCalculator.Calculate` по [графу модулей](../glossary.md#module-graph) |
+| Порог | `gate.coreSizeMin` в `arch-lens.yaml` (по умолчанию `3`); правило [B5](../findings/B5.md) класса `trigger` срабатывает при `coreSize >= coreSizeMin` |
 
-## What it measures
+## Термины
 
-Number of modules in the **largest cyclic** SCC (0 if none). Ties pick the Ordinal-min joined id list.
+**Ядро** (core) — это наибольшая циклическая [компонента сильной связности](../glossary.md#scc) графа модулей: самая большая группа модулей, каждый из которых прямо или косвенно зависит от всех остальных в группе. Остальные понятия — [учитываемый модуль](../glossary.md#scored) и [ничья по ordinal](../glossary.md#ordinal) — определены в словаре.
 
-## How to read it
+## Что измеряет
 
-`0` or `1` never appear as a cycle (singletons are not cyclic). `2` is a pair ([B1](../findings/B1.md)). `≥ gate.coreSizeMin` (default 3) emits B5.
+Метрика отвечает на вопрос: **сколько модулей входит в самый большой клубок взаимных зависимостей**.
 
-## What "bad" looks like
+```text
+sccs     = компоненты сильной связности графа модулей
+coreSize = max |scc| по компонентам с |scc| >= 2
+coreSize = 0, если циклических компонент нет
+при равных размерах ядром считается компонента с ordinal-меньшей склейкой
+отсортированных идентификаторов (string.Join("\0", sorted))
+```
 
-Core size 5+ : a mesh, not a pair of accidentally coupled features. Do not “fix” by merging all core modules into one YAML id unless they are truly one feature.
+Значение `1` невозможно: одиночный модуль циклической компонентой не считается, поэтому метрика равна либо `0`, либо числу от `2` и выше. Ядро — это ровно самый длинный элемент списка [cycles](cycles.md); при нескольких компонентах одинакового размера выбирается та, чьи идентификаторы идут раньше по ordinal, и именно она попадает в сообщение B5.
+
+Примеры из юнит-тестов `CorePathAnalyzerTests`:
+
+- `Two_cycle_is_below_default_core_size_min`: рёбра `B → A` и `A → B` дают `coreSize = 2`, ядро `["A", "B"]`, находки B5 при пороге по умолчанию нет.
+- `Three_cycle_emits_B5_with_ordinal_joined_ids`: цикл `C → A → B → C` даёт `coreSize = 3` и находку B5 с сообщением `core SCC: A, B, C` и отпечатком `ForTypeEdge("B5", "A,B,C", "", [])`.
+- `Equal_size_cyclic_sccs_pick_ordinal_min_member_join`: две пары `{M, N}` и `{A, B}` дают `coreSize = 2`, ядром объявляется `["A", "B"]`.
+- `Calculator_honors_core_size_min_override`: при `coreSizeMin = 2` пара `{A, B}` уже даёт находку B5.
+
+## Как читать
+
+- Чип показывает целое число; в `metrics.json` то же число лежит под ключом `coreSize`. Состав ядра чип не называет: его смотрят в разделе Cycles на вкладке Metrics (самая длинная строка) или в сообщении B5 на вкладке Findings.
+- `0` означает, что раздел Cycles показывает `no module cycles`. `2` означает пару взаимно зависимых модулей: для B1 это уже цикл, для B5 при пороге по умолчанию — ещё нет.
+- Порог `gate.coreSizeMin` сравнивается нестрого: при значении по умолчанию ядро из трёх модулей уже даёт находку. B5 — находка снимка: её создаёт `map`, она видна на вкладке Findings и попадает в `findings.json`; гейт пропускает её, если отпечаток занесён в `knownFindings`.
+- Метрика **абсолютная**: она не зависит от числа модулей в решении. Относительную долю показывает [coreShare](coreShare.md), а сколько весят рёбра внутри ядра — [tanglePct](tanglePct.md).
+- Ядро — одно. Если в решении две независимые компоненты по три модуля, `coreSize = 3`, а не `6`; вторая компонента видна только в списке `cycles`.
+- Роли `host` и `test` в графе отсутствуют, поэтому корень композиции, ссылающийся на все реализации, ядро не образует (тест `Host_and_test_are_absent_from_core_and_path`).
+
+## Что считать плохим
+
+- **`coreSize >= gate.coreSizeMin`** — находка B5. Тройка модулей, зависящих друг от друга, — это уже не случайная пара, а начало «середины», через которую проходит любое изменение.
+- **Рост ядра от снимка к снимку.** Каждый присоединённый модуль увеличивает и число модулей, которые нельзя собрать, протестировать или выделить отдельно.
+- **Ядро из пяти и более модулей** — это сетка, а не пара случайно сцепленных фич; разбирать её нужно по одному ребру, начиная с направления, которое [feedbackWeight](feedbackWeight.md) считает обратным.
+- **Слияние всех модулей ядра в один идентификатор через `modules.assemblies[].module` в YAML** обнуляет метрику, но не убирает зависимости: так поступают только тогда, когда эти сборки действительно составляют одну фичу.
+
+См. также [B5](../findings/B5.md), [B1](../findings/B1.md), [cycles](cycles.md), [coreShare](coreShare.md), [maxModulePath](maxModulePath.md), [tanglePct](tanglePct.md).

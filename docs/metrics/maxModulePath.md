@@ -2,20 +2,51 @@
 
 <!-- report-chip: maxModulePath -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `maxModulePath` (int, **edges** on the condensation DAG) |
-| Metrics chip | **maxModulePath** |
-| Related finding | [B6](../findings/B6.md) |
+| Ключ в `metrics.json` | `maxModulePath` (целое число — длина пути **в рёбрах** по конденсации графа модулей) |
+| Чип на вкладке Metrics | **maxModulePath** (целое число) |
+| Где считается | `CorePathAnalyzer.LongestCondensationPath`, вызывается из `StaticMetricsCalculator.Calculate` |
+| Порог | `gate.maxModulePath` в `arch-lens.yaml` (по умолчанию `6`); правило [B6](../findings/B6.md) класса `trigger` срабатывает при `maxModulePath >= gate.maxModulePath` с сообщением `maxModulePath {значение} >= {порог}` |
 
-## What it measures
+## Термины
 
-Longest path length in the DAG of SCCs (cycles collapsed). Not the number of modules on the path (`edges = modules - 1` on a simple chain of singletons).
+[Конденсация](../glossary.md#condensation) — граф, в котором каждая [компонента сильной связности](../glossary.md#scc), включая одиночные модули, стянута в один узел. Конденсация всегда ациклична, поэтому в ней есть самый длинный путь. **Длина пути в рёбрах** — число переходов по стрелкам: цепочка `A → B → C → D` имеет длину `3`, хотя модулей в ней четыре.
 
-## How to read it
+## Что измеряет
 
-`0` if there are no SCC nodes (empty graph). A chain of 7 modules is 6 edges — fires B6 at the default threshold 6.
+Метрика отвечает на вопрос: **через сколько слоёв зависимостей в худшем случае проходит цепочка от самого верхнего модуля до самого нижнего**, если каждый цикл считать одним узлом.
 
-## What "bad" looks like
+```text
+rep(m)   = ordinal-минимальный идентификатор в SCC, содержащей m
+рёбра конденсации = { (rep(from), rep(to)) : (from, to, w) ∈ InterEdges, rep(from) != rep(to) }
+                    без дубликатов и без веса
+обход в топологическом порядке (алгоритм Кана, при ничьих — ordinal):
+    dist[v] = max(dist[v], dist[u] + 1) для каждого ребра u → v
+maxModulePath = max dist[v];  0, если модулей нет
+```
 
-Deep call-down through many feature modules (`UI → … → … → …`). Prefer a shallow DAG: UI/adapters → a few application modules → shared.
+Путь измеряется в рёбрах, а не в модулях, потому что метрика описывает глубину распространения изменения: правка в нижнем модуле пересобирает всех, кто стоит выше, и число «шагов» вверх равно числу рёбер. У одиночного модуля путь равен `0`, у пары `A → B` — `1`; формула `рёбра = модули − 1` верна только для простой цепочки одиночных модулей.
+
+Примеры из юнит-тестов `CorePathAnalyzerTests`:
+
+- `Acyclic_module_graph_has_zero_core_and_dag_edge_path`: цепочка `A → B → C` даёт `2`.
+- `Condensation_path_of_six_edges_emits_B6`: цепочка из семи модулей `M0 → … → M6` даёт `6` и находку B6 с сообщением `maxModulePath 6 >= 6`; цепочка из шести модулей (`Condensation_path_of_five_edges_does_not_emit_B6`) даёт `5` без находки.
+- `Cycle_collapses_to_one_condensation_node_on_the_longest_path`: рёбра `A → B`, `B → A`, `B → C` дают `1`, потому что пара `{A, B}` стянута в один узел.
+- `Host_and_test_are_absent_from_core_and_path`: рёбра `Host → A → B ← Tests` дают `1` — сборки `host` и `test` в графе отсутствуют.
+
+## Как читать
+
+- Чип и `metrics.json` показывают одно целое число. Сам путь отчёт не перечисляет; его восстанавливают по таблице Modules (столбцы Fan-in и Fan-out) или по матрице на вкладке Matrix, отсортированной по слоям.
+- Вес рёбер не учитывается: путь из рёбер весом `1` и путь из рёбер весом `500` равны.
+- **Циклы укорачивают путь.** Компонента из пяти взаимно зависимых модулей — один узел конденсации, и внутри неё длина равна нулю. Поэтому низкое значение при непустом [cycles](cycles.md) ничего хорошего не означает: глубина скрыта внутри ядра. Метрику читают вместе с [coreSize](coreSize.md).
+- Типичная здоровая картина `UI → приложение → домен → инфраструктура → shared` даёт `4`; порог по умолчанию `6` оставляет запас в два слоя.
+- B6 — находка снимка: её создаёт `map`, она видна на вкладке Findings, а гейт пропускает её, если отпечаток `ForTypeEdge("B6", "", "", [])` занесён в `knownFindings`. Отпечаток не зависит от значения, поэтому один раз принятая находка молчит и при дальнейшем росте пути — следить за ростом придётся по чипу.
+
+## Что считать плохим
+
+- **`maxModulePath >= gate.maxModulePath`** — глубокая лесенка фич, вызывающих друг друга через контракты: `UI → Orders → Payments → Accounts → Ledger → …`. Изменение в нижнем модуле пересобирает и потенциально ломает всю цепочку.
+- **Рост на единицу с каждым новым модулем** — новые модули встраиваются в конец цепочки, а не рядом с существующими; это признак «сквозной» архитектуры вместо плоской, где UI и адаптеры опираются на несколько прикладных модулей, а те — на `shared`.
+- **Резкое падение пути без рефакторинга** — обычно означает, что цепочка замкнулась в цикл и стянулась в один узел; проверьте [cycles](cycles.md) и [B1](../findings/B1.md).
+
+См. также [B6](../findings/B6.md), [coreSize](coreSize.md), [coreShare](coreShare.md), [cycles](cycles.md), [propagationCost](propagationCost.md), [fanInOut](fanInOut.md).

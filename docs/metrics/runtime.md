@@ -2,39 +2,68 @@
 
 <!-- report-table: Runtime (DI) -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `runtime` object |
-| Report heading | **Runtime (DI)** plus a cycle list |
-| Related findings | [R1](../findings/R1.md), [R2](../findings/R2.md) |
+| Ключ в `metrics.json` | `runtime` — вложенный объект: `registrations { total, generic, factory, instance, descriptor, opaque, unresolved }`, `ports`, `unboundPorts`, `resolvedEdges`, `interModuleWeight`, `cycles` (список списков идентификаторов модулей) |
+| Таблица на вкладке Metrics | **Runtime (DI)**: строки `registrations`, `generic`, `factory`, `instance`, `descriptor`, `opaque`, `unresolved`, `ports`, `unboundPorts`, `resolvedEdges`, `interModuleWeight`; под таблицей — список циклов либо надпись `no runtime cycles`. Таблица выводится всегда, даже нулевая |
+| Где считается | `StaticMetricsCalculator.RuntimeOf` на основе `BindingResolver.Resolve`, `RuntimeAnalyzer.IsConsumed` и `RuntimeAnalyzer.RuntimeCycles` |
+| Порог / связанные правила | порога в `baseline.json` нет; по тем же циклам выдаётся [R1](../findings/R1.md), по тем же несвязанным портам — [R2](../findings/R2.md); обе — находки снимка класса `trigger`, глушатся через `knownFindings` |
 
-## What it measures
+## Термины
 
-DI extraction for Microsoft.Extensions.DependencyInjection:
+**Регистрация** (`ServiceBinding`) — вызов на `IServiceCollection`, найденный в теле любого метода любого типа решения, включая тестовые сборки. У неё есть тип сервиса, тип реализации (может быть неизвестен), время жизни, форма и тип-регистратор. Хранятся только регистрации, у которых тип сервиса принадлежит решению.
 
-| JSON / row | Meaning |
-|---|---|
-| `registrations.total` {#registrations} | All extracted registrations |
-| `generic` | `AddX<TService, TImpl>` shape |
-| `factory` | factory lambdas |
-| `instance` | instance registrations |
-| `descriptor` | raw descriptor adds |
-| `opaque` | solution-local `Add*`/`TryAdd*` that is not core MEDI (bound, impl unknown) |
-| `unresolved` | registration with null implementation type id |
-| `ports` | distinct ports injected on **container consumer** types |
-| `unboundPorts` | count of [R2](../findings/R2.md) findings |
-| `resolvedEdges` | derived consumer→implementation edges |
-| `interModuleWeight` | weight of those edges that cross scored modules |
-| `cycles` | runtime SCCs (static ∪ binding), including those that duplicate static [B1](../findings/B1.md) |
+**Форма регистрации** (`BindingShape`):
 
-If there are no registrations and no injections, the reporter writes the empty runtime object (zeros, no cycles).
+| Форма | Как выглядит в C# | Известна ли реализация |
+|---|---|---|
+| `generic` | `AddSingleton<IClock, SystemClock>()`, `AddScoped<OrderService>()`, `AddTransient(typeof(IClock), typeof(SystemClock))` | да; при одном аргументе-типе реализация совпадает с сервисом |
+| `factory` | `AddSingleton<IClock>(sp => new SystemClock(...))` | только если её удалось вывести из тела лямбды |
+| `instance` | `AddSingleton<IClock>(clockInstance)` | только если её удалось вывести из выражения |
+| `descriptor` | `Add(ServiceDescriptor.Singleton<IClock, SystemClock>())`, `Replace(...)`, `TryAddEnumerable(...)` | да, по аргументам дескриптора |
+| `opaque` | любой другой `Add*`/`TryAdd*` на `IServiceCollection` вне ядра Microsoft.Extensions.DependencyInjection (Refit, `AddHttpClient<…>`, обёртки библиотек), среди аргументов-типов которого есть тип решения | нет: порт связан, но реализация неизвестна, время жизни `unknown` |
 
-## How to read it
+**Внедрение** (`Injection`) — пара «потребитель → порт» для каждого параметра конструктора, тип которого является портом решения, в том числе внутри обобщённого аргумента (`IEnumerable<IHandler>`, `Lazy<IClock>`). Внедрения записываются для всех типов, зарегистрированы они или нет; отсев происходит при подсчёте.
 
-`unboundPorts` should be 0 in a wired host. `opaque` > 0 means “bound but blind”. `cycles` here can be a **superset** of static cycles; [R1](../findings/R1.md) only reports cycles that are **not** already static.
+**Порт**, **потребитель контейнера** и **ребро `binding`** определены в [словаре](../glossary.md#binding-edge). Кратко: порт — интерфейс или абстрактный класс (абстрактная запись портом не считается); потребитель контейнера — тип, который встречается как сервис или реализация хотя бы в одной регистрации не из тестовой сборки, поэтому класс, которого никто не регистрирует, для этих метрик невидим; ребро `binding` `C → T` строится для тройки «`C` внедряет порт `S`, `S` зарегистрирован с реализацией `T`» при известной `T` из графа, `T ≠ S` (саморегистрация ребра не даёт) и `T ≠ C`, а его вес равен числу таких троек. В граф модулей эти рёбра не входят.
 
-The Matrix **resolve DI** toggle draws `resolvedEdges`; it does not change these numbers.
+## Что измеряет
 
-## What "bad" looks like
+Объект отвечает на вопрос: **что контейнер DI связывает во время выполнения и какие связи между модулями появляются только через него**.
 
-`unboundPorts > 0` (production will fail to resolve). `runtime.cycles` that [R1](../findings/R1.md) flags. Huge `interModuleWeight` with a mesh of feature implementations injecting each other. `opaque` covering the entire container — the catalog cannot see implementations, so R1 may be understated.
+```text
+registrations.total      = число регистраций в каталоге
+registrations.<форма>    = число регистраций данной формы (generic, factory, instance, descriptor, opaque)
+registrations.unresolved = число регистраций, у которых ImplementationTypeId == null
+ports         = |{ S : есть внедрение (C, S), S — порт, C — потребитель контейнера не из тестовой сборки }|
+unboundPorts  = число находок R2 в снимке: порты из ports без регистрации, сделанной вне тестовых сборок
+resolvedEdges = число рёбер binding (различных пар C → T)
+interModuleWeight = Σ вес рёбер binding, у которых C и T лежат в разных учитываемых модулях
+cycles        = SCC размера ≥ 2 на графе: узлы — учитываемые модули,
+                рёбра — межмодульные рёбра графа модулей ∪ межмодульные рёбра binding
+```
+
+Если в каталоге нет ни одной регистрации и ни одного внедрения, весь объект нулевой, а `cycles` пуст — **даже когда статические циклы есть**.
+
+Пример из юнит-теста `Runtime_counts_and_cycles_include_static_cycles`: в модуле `A` интерфейс `A.I` и класс `A.Impl`, в модуле `B` класс `B.T`; статическое ребро `A.Impl → B.T`; регистрации `A.I → A.Impl` и саморегистрация `B.T`; конструктор `B.T` принимает `A.I`. Результат: `registrations.total = 2`, `generic = 2`, `ports = 1`, `unboundPorts = 0`, `resolvedEdges = 1` (ребро `B.T → A.Impl`), `interModuleWeight = 1`, `runtime.cycles = [["A", "B"]]` при пустом статическом `cycles`, и в снимке появляется R1.
+
+## Как читать
+
+- **Строка `registrations` — это `registrations.total`**, сумма пяти форм. Строка `unresolved` пересекается с формами: в ней все `opaque` и те регистрации других форм (прежде всего `factory` и `instance`), где реализацию вывести не удалось, поэтому `unresolved >= opaque` всегда.
+- **`ports` считает типы, а не внедрения.** Один `IClock`, внедрённый в двадцать сервисов, даёт `1`. Порты, внедряемые только в незарегистрированные классы или только в тестовые типы, не считаются: в тесте `Ports_ignore_injection_on_unregistered_consumer` одно и то же внедрение даёт `ports = 0`, пока потребитель не зарегистрирован, и `ports = 1`, `unboundPorts = 1`, когда он зарегистрирован сам, а порт — нет.
+- **`unboundPorts <= ports`.** Связанным порт считается при любой регистрации вне тестовых сборок, включая `opaque`; регистрация только в тестовой сборке порт не связывает (тест `Test_only_registration_still_R2_opaque_clears_test_consumer_does_not`). Число не зависит от `baseline.json`: это находки R2 до фильтрации `knownFindings`.
+- **`resolvedEdges` и `interModuleWeight` считают разное.** Первое — число рёбер между типами независимо от ролей: сюда входят рёбра от потребителей в `host` (например, зарегистрированных `IHostedService`) и рёбра через регистрации-подмены в тестовых сборках, потому что `BindingResolver.Resolve` берёт все регистрации порта. Второе — только вес рёбер между разными учитываемыми модулями; именно оно измеряет связность, которой не видно в графе модулей.
+- **`cycles` — надмножество статических циклов.** Граф для них содержит все межмодульные рёбра графа модулей плюс межмодульные рёбра `binding`, поэтому каждая статическая циклическая компонента целиком входит в какую-то компоненту `runtime.cycles` — в ту же самую или в расширенную новыми модулями. Раздел Cycles и список под таблицей Runtime (DI) совпадают только при непустом каталоге DI и без новых замыканий.
+- **R1 сообщает только о несовпадающих.** Компонента, множество модулей которой в точности равно одному из статических циклов, пропускается (тест `No_R1_when_scc_equals_a_static_cycle`): о ней уже сообщают [B1](../findings/B1.md) и [cycles](cycles.md). Новая или расширенная компонента даёт R1 с сообщением `runtime cycle via DI bindings: {модули}` и свидетельствами — рёбрами `binding` внутри неё, например `Gameplay::G.Consumer → Account::A.Impl (binding:1)` из теста `R1_when_binding_closes_a_static_acyclic_pair`.
+- **Переключатель `resolve DI` на вкладке Matrix** дорисовывает рёбра `binding` в матрицу и не меняет чисел этой таблицы.
+- **Границы экстракции** (раздел «DI bindings» в `README.md`): порядок регистраций и приоритет `Replace` не учитываются, ключевые сервисы не распознаются, вызовы `GetRequiredService` точками внедрения не считаются, регистрации под `#if` записываются так, как скомпилированы.
+- **Где искать.** Таблица Runtime (DI) на вкладке Metrics; объект `runtime` в `metrics.json`; сами регистрации и внедрения — раздел `bindings` в `graph.json`; R1 и R2 — вкладка Findings и `findings.json`.
+
+## Что считать плохим
+
+- **`unboundPorts > 0`** — зарегистрированный тип требует в конструкторе порт, о котором контейнер не знает; ему соответствует R2 с сообщением `port {тип} injected in {n} types, no DI registration`. Либо приложение упадёт при разрешении, либо регистрация сделана способом, которого экстрактор не видит (сканирование сборок, ключевые сервисы, внешняя библиотека) — тогда находку принимают через `knownFindings`.
+- **Список циклов, отличающийся от раздела Cycles**, — связывания замкнули зависимость, которой граф модулей не показывает: `Gameplay` получает во время выполнения реализацию из `Account`, а `Account` статически зависит от `Gameplay`. Такой цикл не блокирует (R1 — `trigger`), но при разборе статических циклов о нём легко забыть.
+- **`opaque` и `unresolved` составляют заметную часть `registrations`** — картина «слепая»: без известных реализаций рёбра `binding` не строятся, `resolvedEdges`, `interModuleWeight` и `cycles` занижены, и R1 может молчать при реальном цикле. Явные `AddScoped<IPort, Impl>()` вместо обёрток там, где это возможно, возвращают видимость.
+- **Рост `interModuleWeight` при неизменном графе модулей** — растёт связность, невидимая для [B2](../findings/B2.md)–[B4](../findings/B4.md): всё больше модулей получают чужие реализации через контейнер. Само по себе это устройство DI, но чем больше таких рёбер, тем меньше статические метрики говорят о реальной топологии.
+
+См. также [R1](../findings/R1.md), [R2](../findings/R2.md), [cycles](cycles.md), [B1](../findings/B1.md), [tanglePct](tanglePct.md), [порт, потребитель контейнера и рёбра `binding` в словаре](../glossary.md#binding-edge).

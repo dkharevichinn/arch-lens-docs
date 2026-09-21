@@ -2,20 +2,43 @@
 
 <!-- report-chip: max loc -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `maxLoc` (int) |
-| Metrics chip | **max loc** |
-| Related finding | [C1](../findings/C1.md) is types-based; this is the LOC twin on the chip row |
+| Ключ в `metrics.json` | `maxLoc` (целое число строк) |
+| Чип на вкладке Metrics | **max loc** (целое число с разделителем тысяч) |
+| Где считается | `StaticMetricsCalculator.Calculate`: максимум по `moduleSizes[m].Loc` |
+| Связанные правила | ни одно правило не читает `maxLoc`, и порога в `baseline.json` у него нет; [C1](../findings/C1.md) и [C4](../findings/C4.md) считают **типы**, [C3](../findings/C3.md) сравнивает строки по ролям через [layerLoc](layerLoc.md) |
 
-## What it measures
+## Термины
 
-Maximum module LOC among scored modules.
+**LOC в этом инструменте** ([словарь](../glossary.md#loc)) — число строк исходного текста, занятых объявлением типа: от строки, на которой объявление начинается, до строки, на которой оно заканчивается, включительно, суммарно по всем `partial`-частям (`RoslynGraphExtractor.CountLoc`). Пустые строки и комментарии внутри объявления входят в счёт; ведущие комментарии и `using` перед типом — нет; файлы `*.g.cs`, `*.g.i.cs` и `*.generated.cs` пропускаются целиком. Это не число операторов, не «логические строки» и не размер файла: файл с двумя типами даёт две отдельные величины.
 
-## How to read it
+**LOC модуля** — сумма LOC всех его учитываемых типов, то есть типов из сборок модуля с ролью не `host` и не `test`, включая сборки `shared`.
 
-Where the source text lives. A module can have modest type counts and still dominate LOC (generated UI, large switch tables).
+## Что измеряет
 
-## What "bad" looks like
+Метрика отвечает на вопрос: **сколько строк кода в самом большом модуле решения**.
 
-One module’s LOC dwarfs the rest while [layerLoc](layerLoc.md) shows that bulk in UI ([C3](../findings/C3.md)) or infrastructure. Not a ratchet by itself.
+```text
+moduleSizes[m].Loc = Σ Loc(t) по типам t модуля m из сборок с ролью не host и не test
+maxLoc = max по модулям moduleSizes[m].Loc
+maxLoc = 0, если учитываемых модулей нет
+```
+
+Пример из юнит-теста `C1_median_and_max_of_per_module_sizes`: модуль `Small` с одним типом на 1 строку и модуль `Big` с тремя типами по 1 строке дают `moduleSize` `Small: { types: 1, loc: 1 }`, `Big: { types: 3, loc: 3 }`, откуда `maxLoc = 3`, `medianLoc = 2`, `maxTypes = 3`, `medianTypes = 2`.
+
+## Как читать
+
+- Чип называет число, но не модуль. Какой модуль самый большой, смотрят в колонке LOC таблицы Modules на вкладке Metrics или в `metrics.json` под ключом `moduleSize`.
+- Читать чип нужно рядом с [medianLoc](medianLoc.md): отношение `max loc / median loc` показывает, насколько один модуль выделяется из ряда. Само по себе большое число ничего не значит — у большого решения все модули большие.
+- Число типов и число строк — разные оси. Модуль с умеренным числом типов может доминировать по строкам за счёт длинных классов: `*.Designer.cs`-частей (такие файлы сгенерированными не считаются), больших `switch`, таблиц сопоставления. Обратное тоже верно: сотня крошечных записей даёт много типов и мало строк.
+- Вложенные типы считаются дважды: их строки входят в объявление внешнего типа и ещё раз учитываются как отдельный тип. У модулей с крупными вложенными классами LOC завышен.
+- Метрика не входит в `baseline.ratchets`, и гейт на неё не реагирует. Рост самого большого модуля от снимка к снимку отслеживают вручную по `metrics.json` двух запусков; автоматически рост размера видит только [C4](../findings/C4.md) при `gate --against`, и он считает типы.
+
+## Что считать плохим
+
+- **Один модуль многократно превышает медиану по строкам**, а таблица [Layer LOC](layerLoc.md) показывает, что объём лежит в `ui` ([C3](../findings/C3.md)) или в `infrastructure` (непрозрачное тело, [C2](../findings/C2.md)).
+- **`max loc` растёт быстрее, чем `median loc`,** — новая функциональность оседает в одном и том же модуле вместо распределения по фичам; вероятна находка [C1](../findings/C1.md) по типам, если модуль вырастет до `>= 20` типов и трёх медиан.
+- **Большой `max loc` при маленьком `max types`** — несколько очень длинных типов; кандидаты в тип-«бог» по [E1](../findings/E1.md), даже если по числу типов модуль скромный.
+
+См. также [medianLoc](medianLoc.md), [maxTypes](maxTypes.md), [medianTypes](medianTypes.md), [moduleSize](moduleSize.md), [layerLoc](layerLoc.md), [C1](../findings/C1.md), [C3](../findings/C3.md).

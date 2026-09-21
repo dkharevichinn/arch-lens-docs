@@ -2,22 +2,49 @@
 
 <!-- report-table: Layer LOC -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `layerLoc` (object module → `{ contract, implementation, infrastructure, ui }`) |
-| Report table | **Layer LOC** |
-| Related findings | [C2](../findings/C2.md), [C3](../findings/C3.md) |
+| Ключ в `metrics.json` | `layerLoc` — объект модуль → `{ contract, implementation, infrastructure, ui }`; строка есть у каждого учитываемого модуля, у которого есть хотя бы один тип |
+| Таблица на вкладке Metrics | **Layer LOC** с колонками `contract`, `implementation`, `infrastructure`, `ui`; при пустом словаре (в графе нет модулей) таблица не выводится |
+| Где считается | `SizeBalanceAnalyzer.Collect`, вызывается из `StaticMetricsCalculator.Calculate` |
+| Связанные правила | [C3](../findings/C3.md) — `ui > implementation` при `implementation > 0`, класс `trigger`; [C2](../findings/C2.md) считает **типы** по тем же ролям, а не строки |
 
-## What it measures
+## Термины
 
-LOC summed from types, bucketed by **assembly role** inside the module. Shared/host/test types do not appear in these four buckets (host/test are not scored; shared types are not assigned to these role columns).
+[LOC](../glossary.md#loc) типа в этом инструменте — число строк исходного текста от первой до последней строки объявления типа включительно, суммарно по всем `partial`-частям; пустые строки и комментарии внутри объявления входят в счёт, файлы `*.g.cs`, `*.g.i.cs` и `*.generated.cs` не учитываются. Это не число операторов и не «логические строки».
 
-Every scored module gets a row (zeros if it has no types in a role).
+**Роль сборки** ([словарь](../glossary.md#module)) определяет колонку: тип попадает в `contract`, `implementation`, `infrastructure` или `ui` по роли той сборки, в которой он объявлен, а не по пространству имён или каталогу.
 
-## How to read it
+## Что измеряет
 
-Compare **ui** vs **implementation** for [C3](../findings/C3.md) (`ui > implementation` and implementation > 0). [C2](../findings/C2.md) uses **type counts**, not these LOC numbers.
+Метрика отвечает на вопрос: **как строки кода модуля распределены между его контрактом, телом, адаптерами и представлением**.
 
-## What "bad" looks like
+```text
+для каждого учитываемого модуля m и каждого его типа t из сборки с ролью не host и не test:
+  contract[m]       += Loc(t), если роль сборки t == contract
+  implementation[m] += Loc(t), если роль == implementation
+  infrastructure[m] += Loc(t), если роль == infrastructure
+  ui[m]             += Loc(t), если роль == ui
+типы сборок с ролью shared не входят ни в одну из четырёх колонок
+```
 
-UI column dominates implementation in a feature module (views owning the use-cases). Contract LOC huge and implementation tiny (anemic, often with C2). Infrastructure LOC huge with a one-type contract (opaque body — C2 uses types ≥ 20, but this table still shows the bulk).
+Пример из юнит-теста `Layer_loc_sums_by_role_and_ignores_host_test`: модуль `M` со сборками `M.Contracts` (тип на 1 строку), `M` (2 строки), `M.Infra` (4 строки), `M.Ui` (8 строк), а также `App.Host` и `M.Tests` по 99 строк даёт строку `M: { contract: 1, implementation: 2, infrastructure: 4, ui: 8 }`; строк `App.Host` и `M.Tests` в таблице нет, 99 строк тестов в модуль `M` не попадают.
+
+Тест `Ui_heavier_than_implementation_is_C3`: `Home` с сервисом на 3 строки и страницей UI на 10 строк даёт `{ 0, 3, 0, 10 }` и находку `ui outweighs implementation: Home`. Тот же модуль без сборки реализации даёт `{ 0, 0, 0, 10 }` и находки не даёт (`Ui_without_implementation_loc_is_not_C3`): сравнение требует `implementation > 0`.
+
+## Как читать
+
+- Все четыре колонки — целые числа строк; в `metrics.json` они лежат как `layerLoc.<модуль>.contract` и так далее.
+- Сумма четырёх колонок **не обязана** совпадать с колонкой LOC таблицы Modules ([moduleSize](moduleSize.md)): туда входят и типы сборок `shared`, а сюда — нет. Разница между `moduleSize.loc` и суммой строк Layer LOC равна строкам `shared`-сборок модуля. У модуля, состоящего только из `shared`-сборки, все четыре колонки нулевые.
+- Нулевая колонка означает, что у модуля нет сборки с такой ролью или в ней нет типов. Роли назначаются конвенцией по суффиксам (`.Contracts`, `.Infrastructure`, `.UI`) либо явно в `arch-lens.yaml`; если сборка `Account.Web` не описана в YAML с ролью `ui` и модулем `Account`, конвенция сделает её отдельным модулем `Account.Web` с ролью `implementation`, и её строки лягут в колонку `implementation` этого отдельного модуля.
+- Правило C3 сравнивает только `ui` и `implementation`; `infrastructure` в сравнение не входит. Правило C2 использует число типов в контракте и в теле (реализация плюс инфраструктура), а не строки, поэтому большая колонка `contract` при маленьком `implementation` сама по себе C2 не даёт.
+- Вложенные типы считаются дважды: их строки входят в объявление внешнего типа и учитываются ещё раз как отдельный тип. Модули с большими вложенными типами выглядят крупнее, чем есть.
+
+## Что считать плохим
+
+- **`ui > implementation` при ненулевом `implementation`** — представления владеют сценариями: логика живёт во view-model и code-behind, а сборка реализации выродилась в набор помощников ([C3](../findings/C3.md)).
+- **Большой `contract` и крохотный `implementation`** — анемичный контракт: DTO и интерфейсов много, а делать они ничего не умеют; C2 поймает это, когда контрактных типов станет больше, чем типов тела.
+- **Огромная `infrastructure` при одном-двух типах в контракте** — непрозрачное тело: за узкой дверью прячется весь модуль; C2 сработает при двадцати и более типах тела и четырёхкратном перевесе над контрактом, но таблица показывает перекос раньше.
+- **Растёт только одна колонка от снимка к снимку** — модуль развивается не той стороной, которой должен: контракт застыл, а тело пухнет, либо наоборот.
+
+См. также [C3](../findings/C3.md), [C2](../findings/C2.md), [C1](../findings/C1.md), [moduleSize](moduleSize.md), [maxLoc](maxLoc.md), [medianLoc](medianLoc.md).

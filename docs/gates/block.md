@@ -1,30 +1,38 @@
 # block
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| JSON | `block` |
-| Exit code | `5` (`CliExitCodes.Block`) |
-| Meaning | At least one finding is class `invariant` or `ratchet` |
+| В `gate-report.json` | `"verdict": "block"` |
+| Код выхода | `5` (`CliExitCodes.Block`) |
+| Смысл | в итоговом списке есть **хотя бы одна** находка класса `invariant` или `ratchet` |
 
-## When it fires
+## Когда выносится
 
-Typical blockers:
+Вердикт `block` выносится, если после фильтрации по `knownFindings` и `knownCycles` осталась хотя бы одна находка класса `invariant` или `ratchet`. Находки класса `trigger` могут присутствовать в том же отчёте, но на вердикт уже не влияют.
 
-- New [A1](../findings/A1.md) / [A2](../findings/A2.md) / [A7](../findings/A7.md)
-- New [B1](../findings/B1.md) cycle not in `knownCycles`
-- Ratchet worse than baseline: [A3](../findings/A3.md), [A4](../findings/A4.md), [B2](../findings/B2.md), [B3](../findings/B3.md), [B4](../findings/B4.md), [B9](../findings/B9.md), [F1](../findings/F1.md)
-- [G1](../findings/G1.md) violating or cycle-forming (with `--against`)
+Источники блокировки делятся на три группы.
 
-Triggers may appear in the same report; the verdict is still **block**.
+| Группа | Правила | Что произошло |
+|---|---|---|
+| Инварианты снимка | [A1](../findings/A1.md), [A2](../findings/A2.md), [A7](../findings/A7.md) | появилось запретное ребро между ролями сборок или `InternalsVisibleTo` в нетестовую сборку, и его отпечатка нет в `knownFindings` |
+| Инварианты гейта | [B1](../findings/B1.md); при `--against` — [G1](../findings/G1.md) с сообщениями `new violating edge` и `new cycle-forming edge` | появилась циклическая группа модулей, которой нет в `knownCycles`, либо новое ребро, нарушающее правила A1/A2 или замыкающее цикл |
+| Пороги | [A3](../findings/A3.md), [A4](../findings/A4.md), [B2](../findings/B2.md), [B3](../findings/B3.md), [B4](../findings/B4.md), [B9](../findings/B9.md), [F1](../findings/F1.md) | текущее значение метрики стало **строго больше** значения в `baseline.ratchets` |
 
-## What to do
+Сообщение пороговой находки всегда содержит оба числа, например `tanglePct 0.2 > baseline 0.1` или `contractSurface[Account.Contracts] 19 > baseline 18`, поэтому по `gate-report.json` сразу видно, насколько порог превышен.
 
-Fix the invariant or revert the ratchet (internalize types, break the cycle, point tests at contracts). Only then re-baseline if the new number is the policy floor.
+## Что делать
 
-## What not to do
+1. Прочитайте каждую блокирующую находку в `gate-report.json` и откройте страницу её правила. Для инвариантов там указано, какое ребро или какой цикл нужно убрать; для порогов — какая метрика выросла и из чего она складывается.
+2. Исправьте причину, а не показатель: сделайте публичный тип реализации `internal`, замените зависимость от чужой реализации зависимостью от контракта, разорвите цикл, переведите тесты на контракт. После этого повторите `arch-lens gate`.
+3. Если рост метрики — осознанное архитектурное решение (например, публичный API контракта действительно расширен, или два модуля временно объединяются), выполните `arch-lens baseline` и закоммитьте новый `baseline.json` **вместе** с изменением кода, объяснив в описании коммита, почему порог поднят.
+4. Если инвариант нарушен намеренно и навсегда (унаследованный цикл, который не будут разбирать), зафиксируйте это явно: цикл — в `knownCycles`, ребро A1/A2/A7 — его отпечатком в `knownFindings`. Это признанный долг, и он останется виден в отчёте команды `map`.
 
-- Do **not** rewrite `baseline.json` as the fix.
-- Do **not** add `knownCycles` for a cycle you just introduced.
-- Do **not** InternalsVisibleTo a product assembly to “fix” A1 ([A7](../findings/A7.md) will block instead).
+## Чего не делать
 
-See [pass](pass.md), [triggers](triggers.md).
+- Не переписывайте `baseline.json` как способ «починить» вердикт. Порог существует для того, чтобы каждое его повышение было решением, а не побочным эффектом красного CI.
+- Не добавляйте в `knownCycles` цикл, который появился в этом же изменении. Список предназначен для замораживания унаследованных циклов, а не для легализации новых.
+- Не заносите в `knownFindings` отпечатки пороговых находок (B2, B3, B4, B9, F1, A3, A4) и B1: гейт эти отпечатки не читает, находка вернётся на следующем запуске.
+- Не «чините» A1 через `InternalsVisibleTo` в соседнюю продуктовую сборку — вместо A1 сработает [A7](../findings/A7.md), тоже класса `invariant`.
+- Не переводите сборку в роль `host` в YAML, чтобы её рёбра перестали проверяться. Роль `host` — для корня композиции, а не для проектов, которым неудобно жить по правилам.
+
+См. также [pass](pass.md), [triggers](triggers.md), [обзор вердиктов](index.md).

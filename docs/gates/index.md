@@ -1,29 +1,36 @@
-# Gate verdicts
+# Gate — вердикты
 
-`arch-lens gate` always returns one of three **architecture** verdicts after a successful run (usage/load/crash use exit 1–3 and are not catalogued as findings).
+Команда `arch-lens gate <решение> --baseline baseline.json` после успешного запуска всегда выносит ровно один из трёх вердиктов и возвращает соответствующий код выхода. Коды 1, 2 и 3 (ошибка использования, не удалось загрузить решение, непредвиденная ошибка) вердиктами не являются и в этом каталоге не описываются.
 
-| Verdict | JSON | Exit | When |
+| Вердикт | Значение в `gate-report.json` | Код выхода | Условие |
 |---|---|---|---|
-| [pass](pass.md) | `pass` | 0 | No remaining findings |
-| [triggers](triggers.md) | `triggers` | 4 | Only `trigger` class findings |
-| [block](block.md) | `block` | 5 | Any `invariant` or `ratchet` finding |
+| [pass](pass.md) | `"verdict": "pass"` | `0` | после всех проверок не осталось ни одной находки |
+| [triggers](triggers.md) | `"verdict": "triggers"` | `4` | остались находки, и все они класса `trigger` |
+| [block](block.md) | `"verdict": "block"` | `5` | осталась хотя бы одна находка класса `invariant` или `ratchet` |
 
-`GateEvaluator` computes:
+## Как гейт приходит к вердикту
+
+Метод `GateEvaluator.Evaluate` работает в четыре шага, и порядок этих шагов объясняет большинство «странностей», с которыми сталкивается читатель отчёта.
+
+1. **Фильтрация находок снимка.** Гейт берёт находки, которые вычислила бы команда `map` для того же решения (A1, A2, A5, A6, A7, B5–B8, C1–C3, D1–D3, E1–E4, F2, P1, P3, R1, R2, G4), и отбрасывает две группы: находки, чей отпечаток есть в `baseline.knownFindings`, и **все** находки F1 — их гейт заменит собственной на третьем шаге.
+2. **Циклы.** Каждая циклическая группа модулей из `metrics.cycles`, которая не совпадает как множество ни с одной записью `baseline.knownCycles`, становится находкой [B1](../findings/B1.md) класса `invariant`.
+3. **Пороги.** Гейт сравнивает текущие значения с `baseline.ratchets` строгим «больше»: [B2](../findings/B2.md) по `tanglePct`, [B3](../findings/B3.md) по `feedbackWeight`, [B4](../findings/B4.md) по `propagationCost`, [B9](../findings/B9.md) по `sharedGravity`, [F1](../findings/F1.md) по `testsPastContract`, [A3](../findings/A3.md) по словарю `publicInImplementation`, [A4](../findings/A4.md) по словарю `contractSurface`. Превышение даёт находку класса `ratchet`. Новый ключ словаря (модуль или контрактная сборка, которых не было в baseline) и отсутствие ключа `testsPastContract` дают находку класса `trigger`, а не `ratchet`.
+4. **Сравнение с предыдущим снимком.** Только если передан `--against old-graph.json`, `SnapshotDiffer` добавляет [G1](../findings/G1.md), [G2](../findings/G2.md), [G3](../findings/G3.md), [C4](../findings/C4.md) и [A8](../findings/A8.md).
+
+Затем список сортируется по отпечатку, и вердикт вычисляется так:
 
 ```text
-if any finding.Class is Invariant or Ratchet → Block
-else if any findings remain → Triggers
-else → Pass
+если есть находка класса Invariant или Ratchet → Block
+иначе, если список непуст                    → Triggers
+иначе                                        → Pass
 ```
 
-Snapshot findings (A1, A2, A5–A8, B5–B8, C*, D*, E*, F2, P*, G*, R*, …) pass through unless their fingerprint is in `baseline.knownFindings`. **F1 is excluded** from that loop and re-synthesized from `testsPastContract` vs the baseline ratchet.
+Находки, синтезированные на шагах 2–4, через `knownFindings` **не** проходят (исключение — G1, которая сама проверяет и свой отпечаток, и отпечаток соответствующей находки A1/A2). Поэтому занести в `knownFindings` отпечаток B1 или B2 бесполезно: B1 глушится только списком `knownCycles`, а пороговые правила — только возвратом метрики к порогу или осознанным поднятием порога командой `arch-lens baseline`. Подробнее — в словаре, раздел [что глушит `knownFindings`](../glossary.md#known-findings).
 
-[B1](../findings/B1.md) is synthesized from `metrics.Cycles` vs `knownCycles`, not from snapshot findings.
+## Что пишет команда
 
-Ratchets [A3](../findings/A3.md), [A4](../findings/A4.md), [B2](../findings/B2.md), [B3](../findings/B3.md), [B4](../findings/B4.md), [B9](../findings/B9.md), [F1](../findings/F1.md) compare current metrics to `baseline.ratchets`. A **new dictionary key** (new module / new contract assembly) is a **trigger**, not a block.
+В консоль команда печатает три строки — `verdict=pass|triggers|block`, `findings=<число оставшихся находок>`, `report=<путь к gate-report.json>` — и завершается с кодом 0, 4 или 5. Файл `gate-report.json` содержит `version`, `verdict` и массив `findings` в том же формате, что и `findings.json` команды `map`: `rule`, `class`, `fingerprint`, `fromModule`, `toModule`, `message`, `evidence`. Команды `map`, `baseline` и `diff` вердикт не выносят и кодов 4 и 5 не возвращают.
 
-`arch-lens map`, `baseline`, and `diff` never return 4 or 5.
+## Дисциплина работы с baseline
 
-## Baseline discipline
-
-`arch-lens baseline` copies current ratchet numbers and **every current finding fingerprint** into `knownFindings`. That is how you freeze legacy debt. Rewriting baseline to make a block go away without changing code is equivalent to raising a coverage ratchet after deleting tests: do it only as an explicit policy decision.
+Команда `arch-lens baseline` записывает в `baseline.json` текущие значения семи порогов, отпечатки **всех** текущих находок в `knownFindings` и текущие циклы в `knownCycles`. Это способ зафиксировать существующий долг в первом снимке унаследованного репозитория и затем не давать ему расти. Повторный запуск `baseline` ради того, чтобы убрать вердикт `block` без изменения кода, равносилен снижению порога покрытия тестами после удаления тестов: технически возможен, но должен быть явным решением, зафиксированным в описании коммита, а не реакцией на красный CI.

@@ -1,24 +1,29 @@
 # pass
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| JSON | `pass` |
-| Exit code | `0` (`CliExitCodes.Pass`) |
-| Meaning | The gate found **no** remaining findings |
+| В `gate-report.json` | `"verdict": "pass"` |
+| Код выхода | `0` (`CliExitCodes.Pass`) |
+| Смысл | после фильтрации по `knownFindings` и `knownCycles`, сравнения с порогами и (при `--against`) сравнения снимков не осталось **ни одной** находки |
 
-## When it fires
+## Когда выносится
 
-After `GateEvaluator` applies `knownFindings`, `knownCycles`, and ratchet comparisons, the findings list is empty. Improvements vs baseline (lower tangle, smaller surface) still **pass**; they do not rewrite `baseline.json`.
+Вердикт `pass` выносится, когда итоговый список находок `GateEvaluator` пуст. Это значит одновременно четыре вещи: все находки снимка либо отсутствуют, либо занесены в `knownFindings`; все циклы модулей либо отсутствуют, либо перечислены в `knownCycles`; ни один из семи порогов не превышен; при `--against` не найдено ни новых рёбер, ни удалённых членов контракта, ни доминирующего роста, ни превышения радиуса изменений.
 
-`map` / `baseline` / `diff` also use exit 0 on success, but they are not this verdict. This page is **`gate` only**.
+Улучшение относительно baseline — меньшая доля запутанности, меньшая поверхность контракта, меньшее число публичных типов — это тоже `pass`. Гейт **не** переписывает `baseline.json` при улучшении: чтобы закрепить новый, более строгий порог, нужно выполнить `arch-lens baseline` и закоммитить результат.
 
-## What to do
+Команды `map`, `baseline` и `diff` тоже завершаются с кодом 0 при успехе, но это не вердикт `pass`: они вообще не сравнивают снимок с baseline. Эта страница описывает только команду `gate`.
 
-Ship. Optionally run `arch-lens baseline` when you **intend** to lock in a better ratchet (coverage-style tighten).
+## Что делать
 
-## What not to do
+Изменение можно принимать. Если метрики улучшились и вы хотите, чтобы гейт держал новый уровень, выполните `arch-lens baseline` и закоммитьте обновлённый `baseline.json` вместе с изменением кода — так порог станет строже осознанно, а не случайно.
 
-- Do **not** assume pass means “no architecture debt”. Debt can sit in `knownFindings` / `knownCycles`.
-- Do **not** skip `--against` on the factory just because baseline-only pass is green — [G1](../findings/G1.md)–[A8](../findings/A8.md) never run.
+Стоит помнить, что `pass` означает «долг не вырос», а не «долга нет». Всё, что было заморожено в `knownFindings` и `knownCycles`, по-прежнему существует в коде и по-прежнему видно в отчёте команды `map`: вкладка Findings показывает находки снимка независимо от baseline, а чипы вкладки Metrics — текущие значения метрик, даже если они равны порогам.
 
-See [triggers](triggers.md), [block](block.md).
+## Чего не делать
+
+- Не считайте `pass` доказательством чистой архитектуры. Посмотрите, сколько отпечатков лежит в `knownFindings` и какие циклы перечислены в `knownCycles`: это и есть признанный долг.
+- Не отключайте `--against` в основном конвейере только потому, что проверка по baseline зелёная. Без предыдущего снимка правила [G1](../findings/G1.md), [G2](../findings/G2.md), [G3](../findings/G3.md), [C4](../findings/C4.md) и [A8](../findings/A8.md) не вычисляются вовсе, и `pass` ничего о них не говорит.
+- Не выполняйте `arch-lens baseline` автоматически на каждом зелёном запуске. Порог должен меняться по решению человека, иначе случайное ухудшение на следующем запуске окажется «новой нормой».
+
+См. также [triggers](triggers.md), [block](block.md), [обзор вердиктов](index.md).

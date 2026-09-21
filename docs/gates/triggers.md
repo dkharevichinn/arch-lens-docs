@@ -1,25 +1,35 @@
 # triggers
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| JSON | `triggers` |
-| Exit code | `4` (`CliExitCodes.Triggers`) |
-| Meaning | At least one finding remains, and **none** are `invariant` or `ratchet` |
+| В `gate-report.json` | `"verdict": "triggers"` |
+| Код выхода | `4` (`CliExitCodes.Triggers`) |
+| Смысл | после всех проверок остались находки, и **все** они класса `trigger`; ни одной находки классов `invariant` и `ratchet` нет |
 
-## When it fires
+## Когда выносится
 
-The leftover list is only class `trigger`: smells (E*), cohesion (D*), outliers (B5–B8, C*, P*), runtime (R*), F2, G2/G3/G4, A5/A6/A8, new-module A3/A4, missing F1 ratchet, etc.
+Вердикт `triggers` выносится, когда итоговый список находок непуст, но в нём нет ничего блокирующего. В список могут попасть:
 
-CI should **fail or route to analysis**, not merge as if the graph were clean. The factory design uses exit 4 as “AI/human review”, not “ignore”.
+- находки снимка класса `trigger`, чьи отпечатки не занесены в `knownFindings`: запахи типов [E1](../findings/E1.md)–[E4](../findings/E4.md), связность [D1](../findings/D1.md)–[D3](../findings/D3.md), выбросы формы графа [B5](../findings/B5.md)–[B8](../findings/B8.md), размер [C1](../findings/C1.md)–[C3](../findings/C3.md), паттерны [P1](../findings/P1.md) и [P3](../findings/P3.md), время выполнения [R1](../findings/R1.md) и [R2](../findings/R2.md), контракты [A5](../findings/A5.md) и [A6](../findings/A6.md), тесты [F2](../findings/F2.md), совместные изменения [G4](../findings/G4.md);
+- «новый ключ» пороговых словарей: модуль, которого нет в `baseline.ratchets.publicInImplementation` ([A3](../findings/A3.md)), или контрактная сборка, которой нет в `baseline.ratchets.contractSurface` ([A4](../findings/A4.md)), с сообщением `new module/contract, review surface: {key}`;
+- отсутствие ключа `testsPastContract` в baseline — находка [F1](../findings/F1.md) с сообщением `new ratchet F1`;
+- при `--against`: новые рёбра в контракт или в `shared` ([G1](../findings/G1.md) как `trigger`), публичный тип с единственным потребителем ([G2](../findings/G2.md)), радиус изменений ([G3](../findings/G3.md)), доминирующий рост ([C4](../findings/C4.md)), удалённый публичный API ([A8](../findings/A8.md)).
 
-## What to do
+Код выхода 4 — не ошибка сборки и не успех. Замысел конвейера в том, чтобы этот код направлял изменение на разбор человеком или автоматическим ревью, а не пропускал его молча и не блокировал без обсуждения.
 
-Read each trigger page, fix the real structure, or **explicitly** add fingerprints to `knownFindings` for accepted debt. New dictionary-key A3/A4/F1 triggers usually mean “run baseline after review”.
+## Что делать
 
-## What not to do
+1. Откройте `gate-report.json` и пройдите по каждой находке: колонка `rule` ведёт на страницу этого каталога, где описано, что именно посчитано и как это исправить.
+2. Для настоящих структурных проблем исправьте код: разделите модуль, уберите мёртвый тип, зарегистрируйте порт, переименуйте дублирующееся понятие.
+3. Для находок, которые вы осознанно принимаете как долг или как ложное срабатывание, занесите их отпечатки в `baseline.knownFindings` — по одному, с пониманием, что именно каждый отпечаток глушит. На странице каждого правила есть абзац «Когда допустимо принять», описывающий, когда это уместно.
+4. Для находок «новый ключ» (A3, A4) и «новый порог» (F1) выполните `arch-lens baseline` **после ревью** новой поверхности: так текущие значения станут порогами, и со следующего запуска их рост будет блокировать.
 
-- Do **not** treat 4 as 0 in the pipeline.
-- Do **not** bulk-copy `findings.json` fingerprints into baseline without reading them.
-- Do **not** disable analyzers or raise thresholds to convert a noisy triggers run into pass.
+Настраивайте CI так, чтобы код 4 либо останавливал автоматическое слияние, либо создавал задачу на разбор. Превращать его в «успех» через `|| true` означает выключить половину каталога.
 
-See [pass](pass.md), [block](block.md).
+## Чего не делать
+
+- Не приравнивайте код 4 к коду 0 в конвейере. Тогда триггеры перестанут кто-либо читать.
+- Не копируйте все отпечатки из `findings.json` в `knownFindings` одной командой, не прочитав, что за ними стоит. `arch-lens baseline` делает ровно это, и потому его запуск должен быть решением, а не рефлексом.
+- Не поднимайте пороги в YAML (`coreSizeMin`, `maxModulePath`, `blastRadiusThreshold`) и не переводите сборки в роль `host` ради того, чтобы шумный запуск стал `pass`. Пороги калибруются один раз, по данным нескольких запусков, а не под конкретный красный CI.
+
+См. также [pass](pass.md), [block](block.md), [обзор вердиктов](index.md).

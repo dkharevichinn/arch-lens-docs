@@ -1,5 +1,5 @@
 site_name: Arch Lens
-site_description: Catalog of every finding, metric, and gate verdict Arch Lens emits
+site_description: Учебный каталог правил, метрик и вердиктов гейта Arch Lens — определения, формулы как в коде, чтение отчёта, способы исправления
 site_url: https://dkharevichinn.github.io/arch-lens-docs/
 repo_url: https://github.com/dkharevichinn/arch-lens-docs
 repo_name: dkharevichinn/arch-lens-docs
@@ -8,10 +8,11 @@ docs_dir: docs
 site_dir: site
 use_directory_urls: true
 strict: true
-copyright: MIT. Catalog pages describe the product as implemented in source.
+copyright: MIT. Страницы каталога описывают продукт так, как он реализован в исходном коде.
 
 theme:
   name: material
+  language: ru
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -43,6 +44,9 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
   - pymdownx.details
   - pymdownx.superfences:
       custom_fences:
