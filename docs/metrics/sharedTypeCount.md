@@ -2,20 +2,45 @@
 
 <!-- report-chip: shared types -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `sharedTypeCount` (int) |
-| Metrics chip | **shared types** |
-| Related finding | none directly (see [B9](../findings/B9.md)) |
+| Ключ в `metrics.json` | `sharedTypeCount` (целое число, 0 и больше) |
+| Чип на вкладке Metrics | **shared types** (целое число; тысячи отделяются запятой: `1,204`) |
+| Где считается | `StaticMetricsCalculator.Calculate`: счётчик в цикле по `snapshot.Code.Types` |
+| Порог / связанные правила | порога в `baseline.json` нет, ни одно правило эту метрику не читает; смысловая пара — [sharedGravity](sharedGravity.md) и правило [B9](../findings/B9.md) |
 
-## What it measures
+## Термины
 
-Number of types whose assembly role is `shared`. Not a ratchet. Complements gravity (weight) with bulk (types).
+**Сборка `shared`** — сборка с ролью `shared` в `arch-lens.yaml` (`modules.assemblies[].role: shared`). Конвенции по суффиксам имён такую роль не назначают, поэтому без явной записи в YAML метрика равна `0`, а вместе с ней равна `0` и [sharedGravity](sharedGravity.md). Смысл роли описан в словаре: [общее ядро](../glossary.md#module), от которого разрешено зависеть всем.
 
-## How to read it
+**Тип** здесь — любое именованное объявление, извлечённое `RoslynGraphExtractor`: класс, интерфейс, структура, перечисление, делегат, запись (`record`), а также каждый вложенный тип отдельно. Доступность не важна: `internal` и `public` типы считаются одинаково. Типы, объявленные только в сгенерированных файлах (`*.g.cs`, `*.g.i.cs`, `*.generated.cs`), в граф не попадают и не считаются.
 
-A small kernel is tens of types, not hundreds. Compare over time on the Metrics tab; `gate` does not block on this integer alone.
+## Что измеряет
 
-## What "bad" looks like
+Метрика отвечает на вопрос: **насколько велико общее ядро в типах**.
 
-Shared type count climbing every sprint while features shrink — you are centralizing a monolith into one assembly. Dumping feature types into shared to dodge [A1](../findings/A1.md)/[A6](../findings/A6.md) shows up here first.
+```text
+sharedTypeCount = число типов t из snapshot.Code.Types,
+                  у которых сборка t имеет роль shared
+```
+
+Считаются типы по **роли сборки**, а не по модулю. Обычно модуль `shared` состоит из одной сборки, и тогда `sharedTypeCount` совпадает с колонкой Types его строки в таблице Modules. Если через YAML в один модуль собраны сборка `shared` и, например, сборка `implementation`, то типы второй сборки в `sharedTypeCount` не входят, хотя рёбра в них [sharedGravity](sharedGravity.md) считает направленными в ядро.
+
+Пример из юнит-теста `B9_shared_gravity_is_weight_into_shared_modules`: одна сборка `SharedKernel` с ролью `shared` и одним типом `S.Clock` даёт `sharedTypeCount = 1`, тогда как `sharedGravity` там равен `0.5`, потому что половина межмодульного веса направлена в `Clock`.
+
+## Как читать
+
+- Это **объём**, а не **трафик**. Метрика говорит, сколько понятий лежит в ядре, и ничего не говорит о том, пользуются ли ими. Трафик измеряет [sharedGravity](sharedGravity.md); подробное сравнение двух метрик и примеры их расхождения приведены на её странице.
+- Число сравнивают **во времени**, а не с порогом: гейт его не читает, `baseline.json` его не хранит. Чтобы увидеть динамику, сравните `sharedTypeCount` в `metrics.json` двух снимков или чипы двух отчётов.
+- **Где искать состав.** На вкладке Metrics ниже таблиц идёт по одному заголовку на модуль с перечнем сборок и их ролей, например `SharedKernel (shared)`; строка этого модуля в таблице Modules показывает Types, LOC, Fan-in и Fan-out. Fan-in ядра, равный числу остальных модулей, — нормальное состояние для примитивов, которыми пользуются все.
+- **Модуль `shared` — учитываемый модуль**, поэтому на него распространяются правила семейств B, C, D, E и P: ядро из 20 и более типов, втрое превышающее [медиану](medianTypes.md), получит находку [C1](../findings/C1.md) как любой другой модуль. Исключение одно: [B7](../findings/B7.md) не объявляет модуль `shared` «магнитом» по высокому fan-in.
+- Записи (`record`) считаются типами, но не считаются классами: это влияет на другие правила ([A5](../findings/A5.md), [B8](../findings/B8.md)), а на этот счётчик — нет.
+
+## Что считать плохим
+
+- **Ядро растёт от снимка к снимку, а модули — нет.** Общие примитивы придумывают редко; если каждая задача добавляет типы в `shared`, туда переезжает предметная логика, и монолит централизуется в одной сборке.
+- **Предметные имена в ядре**: `OrderDiscountPolicy`, `AccountBalanceProjection`, `IPaymentGateway`. Такие типы принадлежат контрактной сборке своего модуля. Перенос их в `shared` — самый частый способ обойти находки [A1](../findings/A1.md) и [A6](../findings/A6.md): ребро в ядро разрешено всем, и запрет исчезает вместе с границей.
+- **Рост `sharedTypeCount` одновременно с ростом [sharedGravity](sharedGravity.md)** — прямое свидетельство такого переноса: типы посчитаны в ядре, а бывшие внутримодульные ссылки на них стали межмодульными рёбрами в `shared`, и гейт заблокирует их через [B9](../findings/B9.md).
+- Само по себе большое число не является нарушением: ядро с богатой системой типов-значений может быть велико и при этом здорово. Плохим является направление изменения и природа добавляемых типов, а не абсолютная величина.
+
+См. также [sharedGravity](sharedGravity.md), [B9](../findings/B9.md), [moduleSize](moduleSize.md), [maxTypes](maxTypes.md), [A1](../findings/A1.md), [A6](../findings/A6.md), [C1](../findings/C1.md).

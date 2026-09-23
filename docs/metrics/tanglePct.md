@@ -2,24 +2,46 @@
 
 <!-- report-chip: tangle -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `tanglePct` (number 0–1) |
-| Metrics chip | **tangle** (shown as percent) |
-| Related finding | [B2](../findings/B2.md) |
+| Ключ в `metrics.json` | `tanglePct` (число от 0 до 1) |
+| Чип на вкладке Metrics | **tangle** (значение × 100 с суффиксом `%`, до двух знаков после точки) |
+| Где считается | `StaticMetricsCalculator.Calculate`, по [графу модулей](../glossary.md#module-graph) |
+| Порог | `baseline.ratchets.tanglePct`; правило [B2](../findings/B2.md) |
 
-## What it measures
+## Термины
 
-Share of **inter-module** edge weight that sits **inside cyclic SCCs**. `cyclicWeight / totalInter`, or 0 if there is no inter-module weight.
+Нужны понятия [межмодульный вес](../glossary.md#weight), [компонента сильной связности (SCC)](../glossary.md#scc) и [учитываемый модуль](../glossary.md#scored). Кратко: граф модулей содержит только модули с ролями, отличными от `host` и `test`; ребро между модулями весит столько, сколько упоминаний типов одного модуля встречается в типах другого; циклическая компонента — множество из двух и более модулей, взаимно достижимых по стрелкам.
 
-Host/test modules are not in `ModuleGraph`, so their edges do not enter this ratio.
+## Что измеряет
 
-## How to read it
+Метрика отвечает на вопрос: **какая часть всех связей между модулями крутится внутри замкнутых групп модулей**, из которых нельзя выйти, двигаясь по зависимостям.
 
-The chip is `tanglePct * 100` with a `%` suffix (e.g. `12.5%`). JSON is the fraction (`0.125`). Zero means no cyclic inter-module weight (no module cycle, or cycles with zero counted weight).
+```text
+totalInter   = Σ вес(ребро)  по всем рёбрам графа модулей
+cyclicWeight = Σ вес(ребро)  по рёбрам, у которых from и to лежат в одной циклической SCC
+tanglePct    = totalInter == 0 ? 0 : cyclicWeight / totalInter
+```
 
-## What "bad" looks like
+В числитель входят только рёбра **внутри** одной и той же циклической компоненты. Ребро из цикла в модуль вне цикла (например, в `shared`) и ребро между двумя разными циклами в числитель не входят, хотя в знаменатель входят. Рёбра внутри одного модуля не входят ни в числитель, ни в знаменатель, потому что их нет в графе модулей.
 
-Rising toward **1**: almost all cross-module traffic is inside a hairball. Any increase vs `baseline.ratchets.tanglePct` **blocks** ([B2](../findings/B2.md)). A non-zero tangle with a frozen baseline is acknowledged debt — still visible on the chip.
+Пример из юнит-теста `B2_tangle_is_cyclic_weight_over_all_inter_weight`: рёбра `A → B` (вес 2), `B → A` (вес 3) и `C → D` (вес 5) дают `5 / 10 = 0.5`.
 
-Gaming the denominator by adding unrelated acyclic weight makes the chip look better and is not an architecture fix.
+## Как читать
+
+- Значение `0` означает одно из двух: в графе модулей нет циклов (раздел Cycles на вкладке Metrics показывает `no module cycles`) или межмодульных рёбер нет вообще. Второе на практике встречается только у решения из одного модуля.
+- Любое ненулевое значение означает, что список Cycles непуст. Чем ближе к `1`, тем большая часть межмодульного трафика проходит внутри циклов; `1.0` означает, что практически все связи между модулями замкнуты друг на друга.
+- Чип и JSON показывают одно число в разных единицах: чип `12.5%` — это `0.125` в `metrics.json` и в `baseline.json`. Сравнивать с baseline нужно доли, а не проценты.
+- Метрика **относительная**: она может измениться без единого нового ребра в цикле — достаточно добавить или убрать ациклические рёбра, меняющие знаменатель. Поэтому её читают вместе с [`cycles`](cycles.md) (какие именно модули зациклены) и [`feedbackWeight`](feedbackWeight.md) (сколько весят рёбра против порядка слоёв).
+- Метрика **не видит** циклы, которые возникают только через регистрации DI: за них отвечают [`runtime.cycles`](runtime.md) и правило [R1](../findings/R1.md).
+
+На вкладке Matrix прямого аналога нет: матрица строится по компонентам из `rules`, а не по модулям, и чип `cycles` в её шапке относится к компонентам. См. [отличие DSM от графа модулей](../glossary.md#dsm-vs-modules).
+
+## Что считать плохим
+
+- **Рост относительно `baseline.ratchets.tanglePct`.** Любое строгое увеличение — находка [B2](../findings/B2.md) класса `ratchet` и вердикт `block`. Равенство и уменьшение вердикт не меняют.
+- **Ненулевое значение при пороге `0` в baseline** — это новый цикл: вместе с B2 почти наверняка сработает и [B1](../findings/B1.md).
+- **Ненулевое значение при равном ему пороге** — признанный долг. Гейт молчит, чип продолжает показывать долю. Это нормальное состояние для унаследованного кода, если у цикла есть план разбора.
+- **Снижение доли за счёт роста знаменателя** (добавили посторонние ациклические связи) — не улучшение архитектуры, а искажение показателя: цикл остаётся, и B1 его по-прежнему видит.
+
+См. также [B2](../findings/B2.md), [cycles](cycles.md), [feedbackWeight](feedbackWeight.md), [coreSize](coreSize.md), [propagationCost](propagationCost.md).

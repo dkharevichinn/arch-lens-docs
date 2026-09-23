@@ -1,46 +1,92 @@
-# Findings
+# Findings — правила
 
-Every code below is emitted by `ArchLens.Analysis`. There are no extra codes on this site. Each page is the stable URL `/findings/{code}/`.
+Каждый код в таблице ниже выдаёт хотя бы один анализатор в `ArchLens.Analysis`; кодов, которых продукт не порождает, на сайте нет, и автотест следит за тем, чтобы список не расходился с кодом. Каждая страница доступна по стабильному адресу `/findings/{код}/`, и именно туда ведёт ссылка из колонки Rule на вкладке Findings отчёта.
 
-| Code | Family | Class → gate | Page |
+Колонка «Класс → вердикт» показывает, как находка влияет на команду `gate`: `invariant` и `ratchet` дают вердикт `block`, `trigger` — вердикт `triggers`, если больше ничего не блокирует. Колонка «Команды» показывает, где находка вообще может появиться: только находки команды `map` видны на вкладке Findings отчёта; остальные существуют только в `gate-report.json`. Подробнее о классах, порогах и командах — на [обзорной странице](../index.md) и в [словаре](../glossary.md).
+
+## Семейство A — контракты и границы сборок
+
+| Код | О чём | Класс → вердикт | Команды |
 |---|---|---|---|
-| A1 | Contracts | invariant → block | [A1](A1.md) |
-| A2 | Contracts | invariant → block | [A2](A2.md) |
-| A3 | Contracts | trigger or ratchet | [A3](A3.md) |
-| A4 | Contracts | trigger or ratchet | [A4](A4.md) |
-| A5 | Contracts | trigger | [A5](A5.md) |
-| A6 | Contracts | trigger | [A6](A6.md) |
-| A7 | Contracts | invariant → block | [A7](A7.md) |
-| A8 | Contracts | trigger (`--against`) | [A8](A8.md) |
-| B1 | Graph shape | invariant → block | [B1](B1.md) |
-| B2 | Graph shape | ratchet → block | [B2](B2.md) |
-| B3 | Graph shape | ratchet → block | [B3](B3.md) |
-| B4 | Graph shape | ratchet → block | [B4](B4.md) |
-| B5 | Graph shape | trigger | [B5](B5.md) |
-| B6 | Graph shape | trigger | [B6](B6.md) |
-| B7 | Graph shape | trigger | [B7](B7.md) |
-| B8 | Graph shape | trigger | [B8](B8.md) |
-| B9 | Graph shape | ratchet → block | [B9](B9.md) |
-| C1 | Size | trigger | [C1](C1.md) |
-| C2 | Size | trigger | [C2](C2.md) |
-| C3 | Size | trigger | [C3](C3.md) |
-| C4 | Size | trigger (`--against`) | [C4](C4.md) |
-| D1 | Cohesion | trigger | [D1](D1.md) |
-| D2 | Cohesion | trigger | [D2](D2.md) |
-| D3 | Cohesion | trigger | [D3](D3.md) |
-| E1 | Type smells | trigger | [E1](E1.md) |
-| E2 | Type smells | trigger | [E2](E2.md) |
-| E3 | Type smells | trigger | [E3](E3.md) |
-| E4 | Type smells | trigger | [E4](E4.md) |
-| F1 | Tests | trigger or ratchet | [F1](F1.md) |
-| F2 | Tests | trigger | [F2](F2.md) |
-| P1 | DSM patterns | trigger | [P1](P1.md) |
-| P3 | DSM patterns | trigger | [P3](P3.md) |
-| G1 | Diff | invariant or trigger (`--against`) | [G1](G1.md) |
-| G2 | Diff | trigger (`--against`) | [G2](G2.md) |
-| G3 | Diff | trigger (`--against`) | [G3](G3.md) |
-| G4 | Git coupling | trigger (YAML `coChange`) | [G4](G4.md) |
-| R1 | Runtime | trigger | [R1](R1.md) |
-| R2 | Runtime | trigger | [R2](R2.md) |
+| [A1](A1.md) | сборка с ролью, отличной от `contract`, зависит от чужой реализации, инфраструктуры или UI вместо контракта | `invariant` → `block` | `map`, `gate` |
+| [A2](A2.md) | контрактная сборка зависит от реализации, инфраструктуры или UI — своего или чужого модуля | `invariant` → `block` | `map`, `gate` |
+| [A3](A3.md) | число публичных типов в сборках `implementation` и `infrastructure` модуля стало больше порога | `ratchet` → `block`; новый модуль — `trigger` | только `gate` |
+| [A4](A4.md) | публичная поверхность контрактной сборки (типы плюс их публичные члены) стала больше порога | `ratchet` → `block`; новая сборка — `trigger` | только `gate` |
+| [A5](A5.md) | в контрактной сборке есть конкретный класс или вызов между контрактными типами | `trigger` | `map`, `gate` |
+| [A6](A6.md) | сигнатура контрактного типа упоминает тип другого модуля, не относящийся к `shared` | `trigger` | `map`, `gate` |
+| [A7](A7.md) | `InternalsVisibleTo` (или `@testable import`) открывает внутренности нетестовой сборке | `invariant` → `block` | `map`, `gate` |
+| [A8](A8.md) | из публичного API контракта исчез член, который был в предыдущем снимке | `trigger` | только `gate --against` |
 
-`knownFindings` swallows snapshot findings (except F1, which the gate synthesizes from the ratchet). `knownCycles` swallows [B1](B1.md) only.
+## Семейство B — форма графа модулей
+
+| Код | О чём | Класс → вердикт | Команды |
+|---|---|---|---|
+| [B1](B1.md) | появилась группа взаимно зависимых модулей, которой нет в `knownCycles` | `invariant` → `block` | только `gate` |
+| [B2](B2.md) | доля межмодульного веса внутри циклов (`tanglePct`) стала больше порога | `ratchet` → `block` | только `gate` |
+| [B3](B3.md) | вес рёбер против порядка слоёв (`feedbackWeight`) стал больше порога | `ratchet` → `block` | только `gate` |
+| [B4](B4.md) | стоимость распространения изменений (`propagationCost`) стала больше порога | `ratchet` → `block` | только `gate` |
+| [B5](B5.md) | наибольшая циклическая группа модулей достигла `gate.coreSizeMin` (по умолчанию 3) | `trigger` | `map`, `gate` |
+| [B6](B6.md) | самая длинная цепочка модулей достигла `gate.maxModulePath` рёбер (по умолчанию 6) | `trigger` | `map`, `gate` |
+| [B7](B7.md) | модуль зависит почти от всех остальных либо почти все зависят от него, не будучи `shared` и не имея контракта | `trigger` | `map`, `gate` |
+| [B8](B8.md) | зона боли по Мартину либо модуль с контрактом, чья абстрактность ниже 0.5 | `trigger` | `map`, `gate` |
+| [B9](B9.md) | доля межмодульного веса, направленного в `shared` (`sharedGravity`), стала больше порога | `ratchet` → `block` | только `gate` |
+
+## Семейство C — размер и рост
+
+| Код | О чём | Класс → вердикт | Команды |
+|---|---|---|---|
+| [C1](C1.md) | модуль содержит не меньше 20 типов и не меньше трёх медиан | `trigger` | `map`, `gate` |
+| [C2](C2.md) | контракт больше тела (анемичный) либо тело в четыре и более раз больше контракта при 20 и более типах (непрозрачное) | `trigger` | `map`, `gate` |
+| [C3](C3.md) | строк кода в UI модуля больше, чем в его реализации | `trigger` | `map`, `gate` |
+| [C4](C4.md) | один модуль забрал не меньше 70 % прироста типов и вырос не меньше чем на 5 типов | `trigger` | только `gate --against` |
+
+## Семейство D — связность
+
+| Код | О чём | Класс → вердикт | Команды |
+|---|---|---|---|
+| [D1](D1.md) | реляционная связность модуля `H = (R + 1) / N` вне отрезка [1.5, 4] | `trigger` | `map`, `gate` |
+| [D2](D2.md) | типы модуля распадаются на несвязанные острова, второй из которых не меньше 3 типов | `trigger` | `map`, `gate` |
+| [D3](D3.md) | тип по связям принадлежит кластеру, большинство которого лежит в другом модуле | `trigger` | `map`, `gate` |
+
+## Семейство E — запахи типов
+
+| Код | О чём | Класс → вердикт | Команды |
+|---|---|---|---|
+| [E1](E1.md) | тип-«бог»: число соседей не меньше `max(10, 2 × медиана)` | `trigger` | `map`, `gate` |
+| [E2](E2.md) | тип реализации или инфраструктуры без единой входящей связи и без регистрации в DI | `trigger` | `map`, `gate` |
+| [E3](E3.md) | церемониальный интерфейс: одна реализация, не более одного потребителя, нет потребителя в `host` | `trigger` | `map`, `gate` |
+| [E4](E4.md) | публичные типы разных модулей с одинаковыми или почти одинаковыми короткими именами | `trigger` | `map`, `gate` |
+
+## Семейство F — тесты
+
+| Код | О чём | Класс → вердикт | Команды |
+|---|---|---|---|
+| [F1](F1.md) | доля тестовых связей, идущих мимо контракта (`testsPastContract`), выше порога; на `map` — список таких связей | `ratchet` → `block`; нет порога — `trigger`; на `map` — `trigger` | `map`, `gate` |
+| [F2](F2.md) | модуль, на который не ссылается ни одна тестовая сборка | `trigger` | `map`, `gate` |
+
+## Семейство P — паттерны матрицы
+
+| Код | О чём | Класс → вердикт | Команды |
+|---|---|---|---|
+| [P1](P1.md) | feature envy: не меньше 70 % исходящего веса модуля уходит в один модуль при весе не меньше 5 | `trigger` | `map`, `gate` |
+| [P3](P3.md) | изолированный модуль: ни входящих, ни исходящих связей при непустом множестве типов | `trigger` | `map`, `gate` |
+
+## Семейство G — сравнение снимков и история git
+
+| Код | О чём | Класс → вердикт | Команды |
+|---|---|---|---|
+| [G1](G1.md) | новое межмодульное ребро: нарушающее правила A1/A2 или замыкающее цикл (`invariant`), либо в контракт или `shared` (`trigger`) | `invariant` → `block` или `trigger` | только `gate --against` |
+| [G2](G2.md) | контрактная сборка получила публичный тип, которым пользуется ровно один внешний модуль | `trigger` | только `gate --against` |
+| [G3](G3.md) | число модулей, у которых изменились типы или зависимости, превысило `gate.blastRadiusThreshold` (по умолчанию 4) | `trigger` | только `gate --against` |
+| [G4](G4.md) | два модуля меняются в одних коммитах не реже `minPair` раз, но не связаны статическим ребром | `trigger` | `map`, `gate` при `gate.coChange.maxCommits > 0` |
+
+## Семейство R — время выполнения (DI)
+
+| Код | О чём | Класс → вердикт | Команды |
+|---|---|---|---|
+| [R1](R1.md) | цикл модулей, возникающий только с учётом рёбер регистраций DI | `trigger` | `map`, `gate` |
+| [R2](R2.md) | порт внедряется через конструктор, но не имеет ни одной регистрации вне тестов | `trigger` | `map`, `gate` |
+
+## Что глушит какие находки
+
+Список `baseline.knownFindings` отбрасывает **находки снимка** по совпадению отпечатка — это все правила, у которых в колонке «Команды» стоит `map`. Исключение — F1: её находку из снимка гейт отбрасывает всегда и заменяет собственной, вычисленной из `testsPastContract`. Список `knownCycles` глушит только [B1](B1.md). Находки, которые гейт синтезирует сам (A3, A4, B2, B3, B4, B9, F1, A8, C4, G2, G3), в `knownFindings` не проверяются; [G1](G1.md) проверяет и свой отпечаток, и отпечаток соответствующей находки A1/A2. Подробнее — в словаре, раздел [что глушит `knownFindings`](../glossary.md#known-findings).

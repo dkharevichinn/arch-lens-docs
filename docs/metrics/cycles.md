@@ -2,22 +2,47 @@
 
 <!-- report-table: Cycles -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `cycles` (array of arrays of module ids) |
-| Report heading | **Cycles** |
-| Related findings | [B1](../findings/B1.md), [B5](../findings/B5.md) |
+| Ключ в `metrics.json` | `cycles` — массив массивов идентификаторов модулей; каждый внутренний массив отсортирован по ordinal, внешний список — по ordinal-склейке идентификаторов |
+| Раздел на вкладке Metrics | **Cycles**: надпись `no module cycles` либо список, по одной строке вида `A, B` на компоненту |
+| Где считается | `StaticMetricsCalculator.Calculate`: `StronglyConnectedComponents.Find` (алгоритм Тарьяна) по [графу модулей](../glossary.md#module-graph) |
+| Связанные правила | [B1](../findings/B1.md) — класс `invariant`, только `gate`, сравнение с `knownCycles`; [B5](../findings/B5.md) — размер ядра; [B2](../findings/B2.md) и [B3](../findings/B3.md) — вес рёбер внутри циклов |
 
-## What it measures
+## Термины
 
-Cyclic SCCs on `ModuleGraph` (size ≥ 2). Each inner array is sorted Ordinal; the outer list is sorted by joined ids.
+Нужны понятия [граф модулей](../glossary.md#module-graph), [учитываемый модуль](../glossary.md#scored) и [компонента сильной связности](../glossary.md#scc). Напомним главное: в графе модулей нет сборок `host` и `test`, нет рёбер внутри модуля, а ребро `A → B` существует, если хотя бы один тип модуля A упоминает тип модуля B. **Циклической** называется компонента сильной связности из двух и более модулей.
 
-`map` Findings tab does **not** list B1; this list (and `gate`) does.
+## Что измеряет
 
-## How to read it
+Метрика перечисляет все циклические компоненты графа модулей, то есть отвечает на вопрос: **какие группы модулей нельзя выстроить в порядок «сначала нижний, потом верхний», потому что каждый из них прямо или косвенно зависит от остальных**.
 
-Empty → `no module cycles`. Each bullet is a set that will B1-block if it is not in `knownCycles`. Runtime-only cycles are under [runtime](runtime.md), not here.
+```text
+sccs   = StronglyConnectedComponents.Find(graph.Modules, graph.InterEdges)
+cycles = [ sort_ordinal(scc) | scc ∈ sccs, |scc| >= 2 ]
+         внешний список отсортирован по ordinal-склейке идентификаторов
+```
 
-## What "bad" looks like
+Одиночный модуль циклом не считается: рёбер модуля в самого себя в графе не бывает по построению. Пример из юнит-теста `B1_lists_cycle_groups_and_omits_isolated_modules`: модули `A`, `B`, `Iso` и рёбра `A → B`, `B → A` дают ровно один элемент `["A", "B"]`; изолированный `Iso` в список не попадает.
 
-Any cycle in a greenfield modular monolith. Multiple overlapping cycles (a large core). `knownCycles` that never shrink.
+Каждая строка — компонента, а не элементарный цикл. Компонента из пяти модулей выводится одной строкой, хотя простых циклов внутри неё может быть десятки: метрика говорит, **кто** завязан друг на друга, но не **через какие рёбра**. Направления и веса рёбер в списке не видны; за них отвечают [tanglePct](tanglePct.md) и [feedbackWeight](feedbackWeight.md).
+
+Цикл может состоять целиком из разрешённых рёбер. Если реализация `Account` использует контракт `Billing.Contracts`, а реализация `Billing` — контракт `Account.Contracts`, правила [A1](../findings/A1.md) и [A2](../findings/A2.md) молчат, но граф модулей содержит компоненту `["Account", "Billing"]`: контракт принадлежит своему модулю, и ребро в контракт — это ребро в модуль.
+
+## Как читать
+
+- Пустой список означает `no module cycles` в разделе Cycles и нули в `tanglePct`, `feedbackWeight` и `coreSize`; непустой список означает, что все три величины строго больше нуля.
+- Длина самого длинного элемента равна [coreSize](coreSize.md); именно эту компоненту правило B5 называет ядром и перечисляет в сообщении `core SCC: A, B, C`.
+- В `metrics.json` список лежит под ключом `cycles`; в `baseline.json` тот же список лежит под ключом `knownCycles`, куда его целиком копирует команда `arch-lens baseline`.
+- **Список на вкладке Metrics и находка B1 — разные вещи.** Команда `map` показывает циклы здесь, но находку B1 не создаёт: на вкладке Findings отчёта `map` строки B1 не будет никогда. Находку B1 класса `invariant` синтезирует только `gate`, и только для компонент, множество модулей которых не совпадает ни с одним элементом `knownCycles`. Совпадение проверяется как равенство множеств: если признанный цикл `["A", "B"]` вырос до `["A", "B", "C"]`, это новая компонента и новая находка.
+- **Чип `cycles` в шапке отчёта — не эта метрика.** Он считает циклические компоненты между **компонентами матрицы** на вкладке Matrix (проекция по `rules` или по пространствам имён, роли `host` и `test` выключены по умолчанию), а раздел Cycles на вкладке Metrics — между **модулями**, определёнными по сборкам и ролям. Одно может быть нулём при ненулевом другом; см. [отличие DSM от графа модулей](../glossary.md#dsm-vs-modules).
+- Циклы, возникающие только через регистрации DI (рёбра `binding`), сюда не попадают: их перечисляет `runtime.cycles` на странице [runtime](runtime.md), а находку выдаёт [R1](../findings/R1.md).
+
+## Что считать плохим
+
+- **Любой цикл в новом модульном монолите.** Пока список пуст, каждое появление компоненты — находка B1 и вердикт `block`; это самый дешёвый момент для разбора.
+- **Рост существующей компоненты.** Присоединение третьего модуля к паре — новая компонента для B1 и, при `coreSize >= gate.coreSizeMin` (по умолчанию 3), ещё и находка [B5](../findings/B5.md).
+- **Компонента, в которую входит `shared`.** Общему ядру разрешено зависеть только от другого `shared`, поэтому такая компонента сопровождается находками [A1](../findings/A1.md), если только цикл не замкнулся между двумя `shared`-модулями; её разбирают первой.
+- **`knownCycles`, который никогда не сокращается.** Список признанных циклов — отсрочка, а не разрешение: раздел Cycles продолжает показывать компоненту, а `tanglePct` — её вес.
+
+См. также [B1](../findings/B1.md), [B5](../findings/B5.md), [tanglePct](tanglePct.md), [feedbackWeight](feedbackWeight.md), [coreSize](coreSize.md), [coreShare](coreShare.md), [maxModulePath](maxModulePath.md), [runtime](runtime.md).

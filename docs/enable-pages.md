@@ -1,21 +1,27 @@
-# Enable GitHub Pages
+# Public catalog origin
 
-This repository is **public**. Catalog sources sit at the repo root (flattened from product `docs/site/`) and build with MkDocs Material. A workflow (`.github/workflows/pages.yml`) deploys on push to `main`.
+GitHub Free cannot publish Pages from this **private** product repo. The operator catalog is copied to the public repo [`dkharevichinn/arch-lens-docs`](https://github.com/dkharevichinn/arch-lens-docs) and served at [https://dkharevichinn.github.io/arch-lens-docs/](https://dkharevichinn.github.io/arch-lens-docs/).
 
-## Dashboard click
+`CatalogConsistencyTests` in this repo still requires every product finding code and `metrics.json` key to have a page under `docs/site/docs/`. Keep `docs/site/product-codes.json` in sync when adding a code; the public repo CI checks the same file against Markdown pages.
 
-1. Open [github.com/dkharevichinn/arch-lens-docs](https://github.com/dkharevichinn/arch-lens-docs).
-2. **Settings** → **Pages**.
-3. Under **Build and deployment** → **Source**, choose **GitHub Actions** (not “Deploy from a branch”).
-4. Save if the UI shows a save control.
-5. Re-run the **GitHub Pages** workflow from the **Actions** tab, or push an empty commit to `main`, if the first deploy was skipped because Pages was off.
-6. Expected site URL: [https://dkharevichinn.github.io/arch-lens-docs/](https://dkharevichinn.github.io/arch-lens-docs/).
+## Publish copy (public repo)
+
+Do not copy `docs/superpowers/`. From this product repo:
+
+```bash
+rsync -a --delete docs/site/docs/ "$DEST/docs/"
+cp docs/site/mkdocs.yml docs/site/requirements.txt \
+   docs/site/product-codes.json docs/site/check-catalog-pages.py "$DEST/"
+```
+
+`$DEST` is a clone of `dkharevichinn/arch-lens-docs`. Pages uses GitHub Actions (`mkdocs build --strict` + `check-catalog-pages.py`).
 
 ## Local preview
 
 ```bash
+cd docs/site
 pip install -r requirements.txt
 mkdocs serve
 ```
 
-Do not publish product `docs/superpowers/` as the Pages root. That tree is design history in the private product repo; this site is the operator catalog.
+Do not publish `docs/superpowers/` as the Pages root. That tree is design history in git; this site is the operator catalog.

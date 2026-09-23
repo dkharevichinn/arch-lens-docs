@@ -1,21 +1,41 @@
 # fanInOut
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `fanInOut` (object module → `{ fanIn, fanOut }`) |
-| Modules table | **Fan-in**, **Fan-out** |
-| Related findings | [B7](../findings/B7.md), [P1](../findings/P1.md), [P3](../findings/P3.md), [B8](../findings/B8.md) |
+| Ключ в `metrics.json` | `fanInOut` — объект модуль → `{ fanIn, fanOut }`; в нём есть каждый учитываемый модуль, у которого есть хотя бы один тип, в том числе с нулями |
+| Колонки на вкладке Metrics | **Fan-in** и **Fan-out** таблицы **Modules** (`Module | Types | LOC | Fan-in | Fan-out | Public impl`); заголовки колонок ведут на эту страницу |
+| Где считается | `StaticMetricsCalculator.Calculate`: множества `predecessors` и `successors` по рёбрам [графа модулей](../glossary.md#module-graph) |
+| Связанные правила | [B7](../findings/B7.md) — выброс по счётчикам; [P3](../findings/P3.md) — оба счётчика равны нулю; [B8](../findings/B8.md) — те же числа как `afferent` и `efferent`; [P1](../findings/P1.md) считает по весу, а не по этим счётчикам |
 
-## What it measures
+## Термины
 
-`fanIn` / `fanOut` are **counts of neighboring modules**, not weights. A fat edge still counts as 1.
+[Fan-in и fan-out](../glossary.md#fan) — счётчики **соседей** модуля в графе модулей. Fan-out модуля — сколько различных модулей он использует; fan-in — сколько различных модулей используют его. Считаются только [учитываемые модули](../glossary.md#scored): сборки `host` и `test` не входят ни как источник, ни как цель.
 
-Every scored module appears, including zeros.
+## Что измеряет
 
-## How to read it
+```text
+fanOut[m] = |{ to   : (m, to, weight)   ∈ graph.InterEdges }|  — число различных модулей, от которых зависит m
+fanIn[m]  = |{ from : (from, m, weight) ∈ graph.InterEdges }|  — число различных модулей, зависящих от m
+```
 
-Fan-out ≈ “how many modules I depend on”. Fan-in ≈ “how many depend on me”. [P1](../findings/P1.md) uses **weights**, not these counts. [B7](../findings/B7.md) uses these counts vs `N`.
+**Чем счётчик соседей отличается от веса.** [Вес](../glossary.md#weight) ребра между модулями — это сумма всех упоминаний типов одного модуля в типах другого. Fan-in и fan-out вес игнорируют: ребро весом `900` и ребро весом `1` добавляют по единице. Если реализация `Account` девятьсот раз ссылается на типы `Shared` и один раз — на `Billing.Contracts`, то `fanOut[Account] = 2`. Вес отвечает на вопрос «насколько плотно связаны два модуля», счётчик — «со сколькими модулями связан этот». По весу считаются [tanglePct](tanglePct.md), [feedbackWeight](feedbackWeight.md), [sharedGravity](sharedGravity.md) и правило [P1](../findings/P1.md); по счётчикам — B7, P3, метрики Мартина и порядок слоёв.
 
-## What "bad" looks like
+Рёбра внутри модуля (из реализации в собственный контракт) не считаются: в графе модулей их нет. Пример из юнит-теста `B7_fan_in_out_counts_distinct_neighbors`: два модуля и одно ребро `A → B` дают `A: { fanIn: 0, fanOut: 1 }` и `B: { fanIn: 1, fanOut: 0 }`.
 
-Fan-out ≈ N−1 (god row). Fan-in ≈ N−1 on a non-shared module without a contract (magnet). Both zero with types > 0 is [P3](../findings/P3.md).
+## Как читать
+
+- Обе колонки таблицы Modules — целые числа; в `metrics.json` те же значения лежат как `fanInOut.<модуль>.fanIn` и `fanInOut.<модуль>.fanOut`. Таблица Martin показывает их ещё раз под именами `afferent` (Ca) и `efferent` (Ce).
+- Значение `N` — число строк таблицы Modules. Максимальный fan-out равен `N − 1`: модуль зависит от всех остальных. Максимальный fan-in тоже `N − 1`: от модуля зависят все остальные.
+- Модуль, который используют только `host` и тесты, имеет `fanIn = 0`. Для прикладной фичи, к которой обращается только корень композиции, это нормально; тревожно это лишь вместе с `fanOut = 0` — тогда модуль ни с кем не связан.
+- Сумма fan-out по всем модулям равна сумме fan-in и равна числу рёбер графа модулей.
+- Сортировки «fan-in» и «fan-out» на вкладке Matrix относятся к **компонентам матрицы**, а не к модулям; см. [отличие DSM от графа модулей](../glossary.md#dsm-vs-modules).
+
+## Что считать плохим
+
+- **`fanOut >= N − 1` при `N >= 4`** — модуль-«бог», который знает обо всех остальных; правило [B7](../findings/B7.md) выдаёт `fan-in/out outlier`.
+- **`fanIn >= N − 1` при `N >= 4` у модуля без роли `shared` и без контрактной сборки** — «магнит»: все зависят от его реализации напрямую; это второй случай B7. Тот же fan-in у `shared` или у модуля с контрактом B7 не считает нарушением.
+- **`fanIn = 0` и `fanOut = 0` при ненулевом числе типов** — мёртвый модуль, [P3](../findings/P3.md); роль `shared` от этой проверки не освобождена.
+- **Высокий fan-in при низкой абстрактности** — зона боли по Мартину, [B8](../findings/B8.md): от конкретного кода зависят многие, и менять его страшно.
+- **Высокий fan-out с одним «тяжёлым» соседом** — сам по себе счётчик этого не покажет; так выглядит feature envy, и его ловит [P1](../findings/P1.md) по весу.
+
+См. также [B7](../findings/B7.md), [P3](../findings/P3.md), [P1](../findings/P1.md), [martin](martin.md), [moduleSize](moduleSize.md), [publicInImplementation](publicInImplementation.md).

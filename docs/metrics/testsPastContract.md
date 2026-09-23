@@ -2,22 +2,54 @@
 
 <!-- report-chip: testsPastContract -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `testsPastContract` (number 0–1) |
-| Metrics chip | **testsPastContract** (percent) |
-| Related finding | [F1](../findings/F1.md) |
+| Ключ в `metrics.json` | `testsPastContract` (число от 0 до 1) |
+| Чип на вкладке Metrics | **testsPastContract** (значение × 100 с суффиксом `%`, до двух знаков после точки) |
+| Где считается | `TestTopologyAnalyzer.Analyze`; результат попадает в `StaticMetrics.TestsPastContract` |
+| Порог | `baseline.ratchets.testsPastContract` — единственный порог, который может **отсутствовать** в `baseline.json`; правило [F1](../findings/F1.md): в `map` — `trigger` со свидетельствами, в `gate` — `ratchet` при росте либо `trigger` `new ratchet F1` при отсутствии порога |
 
-## What it measures
+## Термины
 
-Of test→product type-edge **weight**, the fraction whose target is **not** `contract` or `shared` (implementation, infrastructure, UI). `0` if there are no test edges to scored product types.
+**Тестовая сборка** — сборка с ролью `test` (суффиксы `.Tests`, `.UnitTests`, `.IntegrationTests` или YAML). Для этой метрики она выступает **источником** рёбер, хотя во всех остальных метриках сборки `test` отбрасываются ([учитываемые модули](../glossary.md#scored)).
 
-## How to read it
+**Ребро мимо контракта** — [ребро между типами](../glossary.md#edge-kinds) любого вида, идущее из типа тестовой сборки в тип учитываемого модуля, роль сборки которого не `contract` и не `shared`, то есть `implementation`, `infrastructure` или `ui`. Тестовая заглушка, реализующая интерфейс контракта, даёт ребро `implementation` в контрактную сборку — это ребро **через** контракт; вызов `new OrderService(...)` в тесте даёт ребро `call` в сборку реализации — это ребро **мимо** контракта.
 
-Chip is percent. `0%` means tests only hit contracts/shared (or there are no test edges). `100%` means every test edge bypasses the contract.
+## Что измеряет
 
-On `map`, F1 evidence lists up to 10 heaviest past pairs. On `gate`, the number is compared to `baseline.ratchets.testsPastContract`.
+Метрика отвечает на вопрос: **какая часть всех связей тестов с продуктовым кодом обращена к телу модулей, а не к их контрактам и общему ядру**.
 
-## What "bad" looks like
+```text
+для каждого ребра e (from → to) графа типов:
+  роль сборки from == test                          иначе ребро пропускается
+  to лежит в учитываемом модуле (не host, не test)  иначе ребро пропускается
+  totalWeight += e.Weight
+  роль сборки to ∈ { contract, shared }             → в числитель не входит
+  pastWeight  += e.Weight
+testsPastContract = totalWeight == 0 ? 0 : pastWeight / totalWeight
+```
 
-The fraction **rising** (F1 ratchet **blocks**). Tests that new up concrete services, DbContexts, and ViewModels across modules. A missing baseline key is a **trigger**, not a silent 0.
+Вес — число упоминаний: три вызова методов `OrderService` из одного тестового класса дают `call: 3`. Рёбра из тестов в тесты (фикстуры, построители) и из тестов в сборки `host` не входят ни в числитель, ни в знаменатель: в тесте `Test_to_host_edges_are_ignored_in_numerator_and_denominator` ребро в `host` весом 100 не меняет результата `0.5`. Метрика **не различает** тесты своего и чужого модуля: ребро из `Account.Tests` в `Account` считается мимо контракта так же, как ребро из `Gameplay.Tests` в `Account`.
+
+Примеры из юнит-тестов: `Mix_one_past_and_one_contract_is_half` — по одному ребру в `M.Contracts` и в `M` дают `1 / 2 = 0.5`; `Weights_sum_in_the_fraction` — ребро в контракт весом 1 и ребро в реализацию весом 3 дают `3 / 4 = 0.75`; `All_test_edges_to_contract_or_shared_are_zero` — рёбра только в `contract` и `shared` дают `0`.
+
+## Как читать
+
+- Чип и JSON показывают одно число в разных единицах: чип `37.5%` соответствует `0.375` в `metrics.json` и в `baseline.json`.
+- **`0%` означает одно из двух**: тесты обращаются только к контрактам и `shared`, либо рёбер из тестов в продуктовый код нет вовсе. Во втором случае каждый учитываемый модуль получает [F2](../findings/F2.md) `untested module: {module}`. **`100%`** означает, что тесты ни разу не упомянули контрактный тип.
+- **F1 в отчёте `map`.** При ненулевом числителе в `findings.json` и на вкладке Findings появляется F1 класса `trigger` с сообщением `testsPastContract {значение}` и свидетельствами — до 10 самых тяжёлых пар «тестовый тип → продуктовый тип» с разбивкой по видам рёбер (`M.Tests::T.Specs → M::M.Foo (call:3)`), по убыванию веса, при равенстве по имени (тест `F1_map_evidence_is_heaviest_past_edges_capped_at_ten`). Это единственное место, где видно, **какие** тесты тянут долю вверх.
+- **F1 в `gate`.** Гейт всегда отбрасывает F1 снимка, даже если её отпечатка нет в `knownFindings`, и синтезирует собственную по числу: при `current.TestsPastContract > baseline` — класс `ratchet`, сообщение `testsPastContract {текущее} > baseline {порог}`, вердикт `block` (тест `TestsPastContract_above_baseline_is_block_F1`: `0.3 > 0.2`). Отпечаток в обоих случаях `ForTypeEdge("F1", "", "", [])`, свидетельств у синтезированной находки нет.
+- **Отсутствие ключа — триггер, а не ноль.** Без `ratchets.testsPastContract` в `baseline.json` гейт выдаёт F1 класса `trigger` с сообщением `new ratchet F1` и вердикт `triggers`, даже при текущем значении `0` (тесты `Missing_baseline_F1_is_triggers_not_block`, `Missing_baseline_F1_triggers_when_current_is_zero`). Четыре других скалярных порога при отсутствии читаются как `0`: для `tanglePct` это разумное «циклов быть не должно», а здесь ноль означал бы «ни один тест не имеет права коснуться реализации», что для модульных тестов неверно. Поэтому продукт не подставляет значение по умолчанию, а требует зафиксировать порог осознанно. Ключ отсутствует только в файлах, написанных вручную или созданных старой версией: `arch-lens baseline` записывает его всегда.
+- **Где искать.** Чип `testsPastContract`; ключ `testsPastContract` в `metrics.json`; строка F1 на вкладке Findings отчёта `map`; порог `ratchets.testsPastContract` в `baseline.json`; запись `"rule": "F1"` в `gate-report.json`.
+
+## Что считать плохим
+
+- **Любое строгое увеличение относительно `baseline.ratchets.testsPastContract`** — находка [F1](../findings/F1.md) класса `ratchet`, вердикт `block`. Равенство и уменьшение вердикт не меняют; уменьшение не переписывает порог, пока вы не выполните `arch-lens baseline`.
+- **Тесты, конструирующие чужие реализации**: `new OrderService(...)`, `new AppDbContext(...)`, view-model другого модуля. Такой тест зависит от внутреннего устройства модуля и сломается при его переработке, хотя контракт не изменится. Свидетельства F1 в отчёте `map` называют самые тяжёлые пары.
+- **Рост доли при росте числа тестов** — новые тесты пишутся против реализации, а не против контракта. Иногда это оправдано (модульные тесты алгоритма внутри модуля), но тогда доля принимается новым порогом, а не растёт незаметно.
+- **Снижение доли за счёт лишних упоминаний контрактных типов в тестах** — искажение показателя: знаменатель вырос, связи с реализацией остались.
+- **Высокое значение при F2 на многих модулях** — тесты сосредоточены в одном-двух модулях и проверяют их внутренности, тогда как остальные модули не тестируются вовсе.
+
+**Когда допустимо принять.** Если тесты внутреннего поведения модуля нужны по замыслу, зафиксируйте текущую долю командой `arch-lens baseline` и закоммитьте `baseline.json`; F1 замолчит до следующего роста, а чип продолжит показывать долю. Заносить отпечаток F1 в `knownFindings` бесполезно: находку снимка гейт отбрасывает всегда, а синтезированную в `knownFindings` не проверяет.
+
+См. также [F1](../findings/F1.md), [F2](../findings/F2.md), [contractSurface](contractSurface.md), [A1](../findings/A1.md), [ratchet в словаре](../glossary.md#ratchet).

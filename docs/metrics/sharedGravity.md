@@ -2,20 +2,58 @@
 
 <!-- report-chip: shared gravity -->
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `sharedGravity` (number 0–1) |
-| Metrics chip | **shared gravity** (percent) |
-| Related finding | [B9](../findings/B9.md) |
+| Ключ в `metrics.json` | `sharedGravity` (число от 0 до 1) |
+| Чип на вкладке Metrics | **shared gravity** (значение × 100 с суффиксом `%`, до двух знаков после точки) |
+| Где считается | `StaticMetricsCalculator.Calculate`: `sharedTargetWeight / totalInter` по [графу модулей](../glossary.md#module-graph) |
+| Порог | `baseline.ratchets.sharedGravity`; правило [B9](../findings/B9.md), класс `ratchet` |
 
-## What it measures
+## Термины
 
-Fraction of inter-module weight whose **target** is a `shared` module.
+**Модуль `shared`** для этой метрики — модуль, хотя бы одна сборка которого имеет роль `shared` (множество `sharedModules` собирается по `snapshot.Modules.Bindings`). Роль `shared` не выводится из суффикса имени: её задаёт только `arch-lens.yaml` (`modules.assemblies[].role: shared`). Если в конфигурации ни одна сборка не помечена как `shared`, метрика всегда равна `0`.
 
-## How to read it
+**Межмодульный вес** ([вес ребра](../glossary.md#weight)) — сумма упоминаний типов одного учитываемого модуля в типах другого, всех видов рёбер вместе. Рёбра внутри модуля и рёбра из сборок `host` и `test` в него не входят.
 
-Chip is percent; JSON is a fraction. Moderate gravity is normal (everyone uses `EmailAddress`). Growth means more of the system’s coupling is aimed at the kernel.
+## Что измеряет
 
-## What "bad" looks like
+Метрика отвечает на вопрос: **какая доля всех связей между модулями направлена в общее ядро**.
 
-Monotone increase vs baseline (**block**). A “shared” assembly that is really a feature magnet. Pair with [sharedTypeCount](sharedTypeCount.md): gravity can rise from heavier edges even if type count is flat.
+```text
+sharedModules      = { m : хотя бы одна сборка модуля m имеет роль shared }
+totalInter         = Σ вес(ребро)  по всем рёбрам графа модулей
+sharedTargetWeight = Σ вес(ребро)  по рёбрам, у которых to ∈ sharedModules
+sharedGravity      = totalInter == 0 ? 0 : sharedTargetWeight / totalInter
+```
+
+Учитывается только **цель** ребра. Ребро из `shared` в обычный модуль попадает в знаменатель, но не в числитель; ребро между двумя модулями `shared` попадает в оба.
+
+Пример из юнит-теста `B9_shared_gravity_is_weight_into_shared_modules`: модули `A`, `B` и `SharedKernel` с ролью `shared`; рёбра `A → SharedKernel` весом 2 и `A → B` весом 2. Числитель 2, знаменатель 4, результат `0.5`; в том же тесте `sharedTypeCount` равен `1`, потому что в ядре один тип `S.Clock`.
+
+### Почему вес, а не типы
+
+`sharedGravity` считает **вес рёбер**, то есть число упоминаний типов ядра в коде других модулей, а соседняя метрика [sharedTypeCount](sharedTypeCount.md) считает **число типов** в сборках `shared`. Они расходятся в обе стороны:
+
+- Пятьдесят вспомогательных типов, сложенных в ядро и никем не используемых, увеличивают `sharedTypeCount` на 50 и не меняют `sharedGravity`.
+- Те же три типа ядра (`Clock`, `Money`, `EmailAddress`), которые начинают упоминаться в каждом новом обработчике, поднимают `sharedGravity` при неизменном `sharedTypeCount`.
+- Перенос типов из модуля-реализации в ядро ради обхода [A1](../findings/A1.md) поднимает обе метрики: тип считается в ядре, а бывшие внутримодульные ссылки на него становятся межмодульными рёбрами в `shared`.
+
+## Как читать
+
+- Чип и JSON показывают одно число в разных единицах: чип `37.5%` соответствует `0.375` в `metrics.json` и в `baseline.json`. Сравнивать с порогом нужно доли.
+- **Умеренное значение — норма.** Ядро существует для того, чтобы на него ссылались, и в модульном монолите заметная часть межмодульного веса естественно направлена в примитивы и идентификаторы.
+- **Высокое значение неоднозначно.** `100%` получается и у системы, где модули общаются только через ядро и совершенно не зависят друг от друга, и у системы, где ядро превратилось в свалку чужих понятий. Различить эти случаи метрика не может; смотрите состав ядра ([sharedTypeCount](sharedTypeCount.md), перечень сборок и ролей под заголовком модуля на вкладке Metrics) и колонку Fan-in модуля `shared` в таблице Modules.
+- **Метрика относительная.** Она падает, когда между обычными модулями появляются новые рёбра — в том числе запретные, которые ловят [A1](../findings/A1.md) и [A2](../findings/A2.md), — и растёт, когда модули перестают зависеть друг от друга напрямую. Поэтому снижение само по себе не означает улучшения, а рост не всегда означает деградацию; читайте вместе с [tanglePct](tanglePct.md) и вкладкой Findings.
+- **Правило [B7](../findings/B7.md) не считает модуль `shared` «магнитом»**: проверка на fan-in, равный `N − 1`, для него отключена (`Magnet` требует `!row.IsShared`). Поэтому растущее притяжение ядра гейт видит только через `sharedGravity` и B9.
+- **Где искать.** Чип `shared gravity`; ключ `sharedGravity` в `metrics.json`; порог `ratchets.sharedGravity` в `baseline.json`; при срабатывании — запись `"rule": "B9"` в `gate-report.json` с сообщением `sharedGravity {текущее} > baseline {порог}`.
+
+## Что считать плохим
+
+- **Любое строгое увеличение относительно `baseline.ratchets.sharedGravity`** — находка [B9](../findings/B9.md) класса `ratchet`, вердикт `block`. Сравнение выполняется оператором `>` без допуска; равенство и уменьшение вердикт не меняют. Отсутствующий ключ читается как `0`.
+- **Рост без новых понятий в ядре** — то есть при неизменном `sharedTypeCount` — означает, что существующие типы ядра расползаются по коду модулей: проверьте, не превратился ли, например, `Result` или `DomainEvent` в универсальный транспорт для всего.
+- **Рост вместе с `sharedTypeCount`** после переноса типов из модуля в ядро — признак того, что ядро принимает предметные понятия конкретных модулей (`OrderDiscountPolicy` в `shared`). Такое понятие принадлежит контрактной сборке своего модуля, а не ядру.
+- **Снижение за счёт новых прямых связей между модулями** — худший из возможных способов «улучшить» метрику: доля упадёт, а находки A1 и рост [tanglePct](tanglePct.md) останутся.
+
+**Когда допустимо принять.** Если ядро действительно получило новое общее понятие (новый примитив, идентификатор, тип времени), зафиксируйте новый порог командой `arch-lens baseline` и закоммитьте `baseline.json` вместе с изменением, назвав в коммите добавленные типы ядра.
+
+См. также [B9](../findings/B9.md), [sharedTypeCount](sharedTypeCount.md), [tanglePct](tanglePct.md), [fanInOut](fanInOut.md), [A1](../findings/A1.md), [A6](../findings/A6.md), [B7](../findings/B7.md).

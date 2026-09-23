@@ -1,21 +1,50 @@
 # publicInImplementation
 
-| Field | Value |
+| Поле | Значение |
 |---|---|
-| `metrics.json` | `publicInImplementation` (object module → int) |
-| Modules table column | **Public impl** |
-| Related finding | [A3](../findings/A3.md) |
+| Ключ в `metrics.json` | `publicInImplementation` (объект: идентификатор модуля → целое число) |
+| Колонка на вкладке Metrics | **Public impl** в таблице Modules; заголовок колонки — ссылка на эту страницу (`DocsCatalog.ColumnKeys`) |
+| Где считается | `StaticMetricsCalculator.Calculate`: цикл по `snapshot.Code.Types` |
+| Порог | `baseline.ratchets.publicInImplementation` — словарь модуль → целое; правило [A3](../findings/A3.md): новый ключ даёт класс `trigger`, рост значения — класс `ratchet` |
 
-## What it measures
+## Термины
 
-Per scored module, how many types are `public` in `implementation` or `infrastructure` assemblies. UI/contract/shared/host/test do not increment.
+**Публичный тип** ([словарь](../glossary.md#public)) — тип, чья **эффективная** доступность равна `public`: вложенный `public` класс внутри `internal` класса считается `internal` и здесь не учитывается.
 
-Every scored module key is present (0 if none).
+**Сборки тела модуля** для этой метрики — сборки с ролями `implementation` и `infrastructure`. Публичные типы контрактных сборок измеряет соседняя метрика [contractSurface](contractSurface.md); публичные типы сборок `ui`, `shared`, `host` и `test` ни одна из двух метрик не считает.
 
-## How to read it
+## Что измеряет
 
-The Modules table **Public impl** column is this map. JSON is the source of truth for the [A3](../findings/A3.md) ratchet. New keys on gate are triggers; increases are blocks.
+Метрика отвечает на вопрос: **сколько типов тела модуля видно снаружи сборки**, то есть насколько велика случайная, не оформленная контрактом поверхность модуля.
 
-## What "bad" looks like
+```text
+для каждого m из graph.Modules:            publicInImplementation[m] = 0
+для каждого типа t из snapshot.Code.Types:
+  роль сборки t ∈ { implementation, infrastructure }  и  t.Accessibility == "public"
+      → publicInImplementation[модуль t] += 1
+```
 
-Implementation assemblies where **everything is public**. That is an accidental API and a ratchet that will fire on every new class. Default to `internal`.
+Ключ заводится для **каждого** учитываемого модуля, у которого есть хотя бы один тип, даже если считать нечего: модуль, состоящий из одной контрактной сборки, присутствует со значением `0`. Это важно для гейта, потому что правило A3 реагирует на появление нового ключа.
+
+Пример из юнит-теста `A3_counts_public_implementation_and_infrastructure_only`: публичный тип в сборке `Impl` (роль `implementation`) и публичный тип в сборке `Infra` (роль `infrastructure`) дают по единице; публичные типы в сборках `Ui` и `Con` (роли `ui` и `contract`) и `internal` тип в сборке `Hidden` дают нули. Итог: `{ "Con": 0, "Hidden": 0, "Impl": 1, "Infra": 1, "Ui": 0 }`, ключи по ordinal.
+
+## Как читать
+
+- **Колонка Public impl** таблицы Modules — это и есть словарь; в `metrics.json` он лежит под ключом `publicInImplementation`, в `baseline.json` — под `ratchets.publicInImplementation`.
+- **Гейт сравнивает по ключам** (`GateEvaluator.AddDictionaryFindings`). Для каждого модуля из текущего словаря: если ключа нет в baseline — находка A3 класса `trigger` с сообщением `new module/contract, review surface: {module}`; если текущее значение строго больше сохранённого — находка класса `ratchet` с сообщением `publicInImplementation[{module}] {текущее} > baseline {порог}` и вердикт `block`. Отпечаток в обоих случаях `ForTypeEdge("A3", module, "", [])`, один на модуль. Модули, оставшиеся в baseline, но исчезнувшие из решения, гейт молча пропускает.
+- **Уменьшение не ужесточает порог само.** Если публичных типов стало меньше, гейт молчит, а baseline хранит старое значение, пока вы не выполните `arch-lens baseline`. Юнит-тесты `A3_public_count_above_baseline_is_block` (`4 > 3`), `A3_public_count_below_baseline_is_pass_without_auto_tighten` и `New_A3_key_is_triggers_not_block` фиксируют все три исхода.
+- **Отличие от A1.** [A1](../findings/A1.md) ловит **фактические** ссылки на реализацию чужого модуля в обход контракта; эта метрика измеряет **возможность** таких ссылок — всё, что компилятор позволит подключить из другой сборки. Ноль в колонке означает, что на реализацию и инфраструктуру модуля из чужой сборки сослаться нельзя иначе как через `InternalsVisibleTo`, которое ловит [A7](../findings/A7.md); публичные типы сборки `ui` метрика не учитывает, и ссылки на них A1 по-прежнему возможны.
+- **Практический минимум обычно равен единице**, а не нулю: публичный статический класс с методом-расширением `services.AddAccount(...)`, через который `host` подключает модуль. Всё остальное в теле модуля может быть `internal`.
+- **Где искать.** Колонка Public impl таблицы Modules; ключ `publicInImplementation` в `metrics.json`; при срабатывании — запись `"rule": "A3"` в `gate-report.json`. На вкладке Findings отчёта `map` A3 не появляется никогда.
+
+## Что считать плохим
+
+- **Значение, близкое к числу типов модуля** (колонки Public impl и Types почти совпадают), — сборка реализации, в которой всё публично. Это случайный API: любой модуль может сослаться на любой сервис, и каждый новый класс будет двигать порог.
+- **Любое строгое увеличение относительно `baseline.ratchets.publicInImplementation[module]`** — находка [A3](../findings/A3.md) класса `ratchet` и вердикт `block`. Сравнение выполняется оператором `>` без допуска.
+- **Новый ключ в словаре** при первом `gate` после появления модуля — находка класса `trigger`; это ожидаемое поведение, а не ошибка. Проверьте поверхность нового модуля и зафиксируйте её командой `arch-lens baseline`.
+- **Публичность ради тестов** — типичная причина роста. Тестовым сборкам достаточно `InternalsVisibleTo`: правило [A7](../findings/A7.md) разрешает его именно для сборок с ролью `test`.
+- **Публичность ради регистрации в DI из `host`** — вторая причина. Регистрация внутри модуля (метод-расширение в самой сборке реализации) оставляет типы `internal` и сохраняет одну публичную точку входа.
+
+**Когда допустимо принять.** Если тип действительно должен быть публичным (например, базовый класс, который расширяют другие модули по замыслу), сначала спросите, не место ли ему в контрактной сборке — там его учтёт [contractSurface](contractSurface.md) и [A4](../findings/A4.md). Если всё же в теле, поднимите порог командой `arch-lens baseline` и объясните причину в коммите.
+
+См. также [A3](../findings/A3.md), [A4](../findings/A4.md), [contractSurface](contractSurface.md), [moduleSize](moduleSize.md), [A1](../findings/A1.md), [A7](../findings/A7.md), [E2](../findings/E2.md).
